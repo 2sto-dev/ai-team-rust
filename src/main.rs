@@ -63,6 +63,9 @@ enum Commands {
         /// Add the request to an existing project instead of creating one.
         #[arg(long)]
         project: Option<String>,
+        /// Name (id) for the new project, e.g. "ulise".
+        #[arg(long)]
+        name: Option<String>,
         /// Command that must pass, run in the workspace after every Builder answer.
         #[arg(long)]
         test_command: Option<String>,
@@ -248,6 +251,7 @@ async fn main() -> Result<()> {
             prompt,
             files,
             project,
+            name,
             test_command,
             plan,
             yes,
@@ -257,6 +261,7 @@ async fn main() -> Result<()> {
             prompt,
             files,
             project,
+            name,
             test_command,
             plan,
             yes,
@@ -955,6 +960,25 @@ fn inputs_preview(files: &[PathBuf]) -> Result<String> {
     Ok(preview)
 }
 
+/// A project name chosen by the Owner, as an id: lowercase, digits and '-'.
+fn normalize_project_name(name: &str) -> Result<String> {
+    let id: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    anyhow::ensure!(
+        !id.is_empty() && id.len() <= 40,
+        "project name must have 1-40 letters or digits"
+    );
+    Ok(id)
+}
+
 fn project_id_from(prompt: &str) -> String {
     let words: Vec<String> = prompt
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -978,6 +1002,7 @@ async fn owner_request(
     prompt: String,
     files: Vec<PathBuf>,
     project_id: Option<String>,
+    new_project_name: Option<String>,
     test_command: Option<String>,
     plan: bool,
     yes: bool,
@@ -1001,7 +1026,17 @@ async fn owner_request(
             id
         }
         None => {
-            let id = project_id_from(&prompt);
+            let id = match new_project_name {
+                Some(name) => {
+                    let id = normalize_project_name(&name)?;
+                    anyhow::ensure!(
+                        store.project(&id).is_err(),
+                        "project {id} already exists; continue it with --project {id}"
+                    );
+                    id
+                }
+                None => project_id_from(&prompt),
+            };
             let mut objective = prompt.trim().to_string();
             if !preview.is_empty() {
                 objective.push_str(&format!(
@@ -1133,7 +1168,7 @@ async fn owner_request(
 const CONSOLE_HELP: &str = "\
 Scrie cererea (poate avea mai multe randuri); un rand gol o trimite.
 Comenzi:
-  /nou            urmatoarea cerere porneste un proiect nou
+  /nou [nume]     urmatoarea cerere porneste un proiect nou (cu numele dat, ex. /nou ulise)
   /proiect <id>   cererile urmatoare merg in proiectul <id>
   /status         starea proiectului curent
   /ajutor         acest mesaj
@@ -1163,6 +1198,7 @@ async fn owner_console(
     let store = Store::open(data_dir)?;
     let orchestrator = Orchestrator::from_registry(Registry::load(employees_dir)?)?;
     let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
+    let mut new_name: Option<String> = None;
     let mut current = match project {
         Some(id) => {
             store.project(&id)?;
@@ -1175,16 +1211,17 @@ async fn owner_console(
     loop {
         println!(
             "\n=== {} ===",
-            current
-                .as_deref()
-                .map(|id| format!("proiect {id}"))
-                .unwrap_or_else(|| "proiect nou".to_string())
+            match (&current, &new_name) {
+                (Some(id), _) => format!("proiect {id}"),
+                (None, Some(name)) => format!("proiect nou: {name} (se creeaza la prima cerere)"),
+                (None, None) => "proiect nou".to_string(),
+            }
         );
 
         // The request (several lines until an empty one) or a command.
         let mut lines: Vec<String> = Vec::new();
         loop {
-            let Some(line) = read_line(if lines.is_empty() { "> " } else { "  " })? else {
+            let Some(line) = read_line(if lines.is_empty() { "> " } else { "... " })? else {
                 return Ok(());
             };
             if lines.is_empty() && line.trim().starts_with('/') {
@@ -1197,6 +1234,11 @@ async fn owner_console(
                 }
                 break;
             }
+            if lines.is_empty() {
+                println!(
+                    "    (continua cererea pe randul urmator sau apasa Enter pe rand gol ca s-o trimiti)"
+                );
+            }
             lines.push(line);
         }
         let first = lines[0].trim().to_string();
@@ -1205,9 +1247,25 @@ async fn owner_console(
             match (parts.next().unwrap_or(""), parts.next()) {
                 ("iesire" | "exit" | "quit", _) => return Ok(()),
                 ("ajutor" | "help", _) => println!("{CONSOLE_HELP}"),
-                ("nou" | "new", _) => {
+                ("nou" | "new", name) => {
                     current = None;
-                    println!("Urmatoarea cerere porneste un proiect nou.");
+                    new_name = match name.map(normalize_project_name).transpose() {
+                        Ok(name) => name,
+                        Err(err) => {
+                            println!("{err:#}");
+                            None
+                        }
+                    };
+                    match &new_name {
+                        Some(name) if store.project(name).is_ok() => {
+                            println!("Proiectul {name} exista deja; continui-l cu /proiect {name}");
+                            new_name = None;
+                        }
+                        Some(name) => println!(
+                            "Proiectul {name} se creeaza la prima cerere. Scrie ce trebuie sa faca echipa."
+                        ),
+                        None => println!("Urmatoarea cerere porneste un proiect nou."),
+                    }
                 }
                 ("proiect" | "project", Some(id)) => match store.project(id) {
                     Ok(_) => current = Some(id.to_string()),
@@ -1260,6 +1318,7 @@ async fn owner_console(
             None
         };
 
+        println!("Cererea ta:\n  {}", prompt.replace('\n', "\n  "));
         let answer = read_line("Pornesc echipa? [D/n] ")?.unwrap_or_default();
         if answer.trim().eq_ignore_ascii_case("n") {
             println!("Anulat.");
@@ -1272,13 +1331,17 @@ async fn owner_console(
             prompt,
             files,
             current.clone(),
+            new_name.clone(),
             test_command,
             false,
             true,
         )
         .await
         {
-            Ok(project_id) => current = Some(project_id),
+            Ok(project_id) => {
+                current = Some(project_id);
+                new_name = None;
+            }
             Err(err) => {
                 println!("Eroare: {err:#}");
                 continue;

@@ -192,11 +192,15 @@ pub fn validate_path(raw: &str) -> Result<String> {
         );
     }
 
-    let first = path.split('/').next().unwrap_or("");
-    anyhow::ensure!(
-        !SKIP_DIRS.contains(&first),
-        "writing into '{first}/' is not allowed"
-    );
+    // Directories only (the last component is the file name), at any depth.
+    if let Some(dir) = path
+        .split('/')
+        .rev()
+        .skip(1)
+        .find(|dir| SKIP_DIRS.contains(dir))
+    {
+        anyhow::bail!("writing into '{dir}/' is not allowed");
+    }
     anyhow::ensure!(
         path != ".gitignore",
         "'.gitignore' is managed by the platform"
@@ -261,7 +265,8 @@ impl Workspace {
             let ignore: String = SKIP_DIRS
                 .iter()
                 .filter(|dir| **dir != ".git")
-                .map(|dir| format!("/{dir}/\n"))
+                // Unanchored: caches such as tests/__pycache__/ sit below the root too.
+                .map(|dir| format!("{dir}/\n"))
                 .collect();
             fs::write(root.join(".gitignore"), ignore)?;
             workspace.commit_paths(
@@ -688,10 +693,13 @@ mod tests {
             "dir./x",
             "",
             ".gitignore",
+            "tests/__pycache__/t.pyc",
         ] {
             assert!(validate_path(bad).is_err(), "{bad:?} must be rejected");
         }
         assert_eq!(validate_path("src\\lib.rs").unwrap(), "src/lib.rs");
+        // A file merely named like a skipped directory is fine.
+        assert_eq!(validate_path("docs/build").unwrap(), "docs/build");
     }
 
     #[test]

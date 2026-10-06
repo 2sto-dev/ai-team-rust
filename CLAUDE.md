@@ -27,8 +27,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - `console [--project ID]` is the interactive Owner console (`owner_console` in `main.rs`).
       - You type a multi-line request (an empty line sends it), then file paths (quotes from Windows drag-and-drop are stripped) and a test command for a new project.
       - It calls `owner_request` and shows progress live (`ProjectManager::with_progress`: each new history line printed from the checkpoint).
-      - It then asks resume/accept/cancel for stopped tasks. Commands: `/nou`, `/proiect <id>`, `/status`, `/ajutor`, `/iesire`.
-    - `request "<prompt>" [--file F]... [--project ID] [--test-command C] [--plan [--yes]]` is the Owner's one-shot entry.
+      - It then asks resume/accept/cancel for stopped tasks. Commands: `/nou [name]` (names the next new project), `/proiect <id>`, `/status`, `/ajutor`, `/iesire`.
+    - `request "<prompt>" [--file F]... [--project ID | --name NAME] [--test-command C] [--plan [--yes]]` is the Owner's one-shot entry.
       - It creates a project, or adds to one with `--project`, and commits the files to `inputs/` on main as `OWNER` (`ProjectManager::add_inputs`).
       - The prompt becomes a task with `add_request`: an `"Owner requests"` milestone, no plan approval needed, and a done project reopens.
       - Then it runs the project.

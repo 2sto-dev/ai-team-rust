@@ -134,7 +134,7 @@ Pornesc echipa? [D/n]
 - după prima cerere rămâi în același proiect: următoarea cerere devine un task nou al lui;
 - un task oprit (teste roșii, veto) te întreabă pe loc: **[r]** reia cu o notă pentru echipă,
   **[a]** acceptă, **[c]** anulează, Enter = lasă-l așa;
-- comenzi: `/nou` (proiect nou), `/proiect <id>`, `/status`, `/ajutor`, `/iesire`.
+- comenzi: `/nou [nume]` (proiect nou, ex. `/nou ulise`), `/proiect <id>`, `/status`, `/ajutor`, `/iesire`.
 
 ## Cerere rapidă a Owner-ului
 
