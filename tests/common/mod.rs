@@ -32,6 +32,7 @@ pub fn project(max_iterations: u32) -> ProjectConfig {
         assigned_team: None,
         test_command: None,
         test_timeout_secs: 60,
+        remote_url: None,
     }
 }
 

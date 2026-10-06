@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 are implemented. Git integration is next. The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
+`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 are implemented, including git. The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
 
 ## Commands
 
@@ -23,7 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - `project run <id> [--max-tasks N]`, `project status <id>`
     - `task show <id>`
     - Owner decisions: `task resume <id> [--note] [--iterations N]`, `task accept <id>`, `task cancel <id>`
-    - `project configure <id> --test-command "..." [--test-timeout N]`
+    - `project configure <id> [--test-command "..."] [--test-timeout N] [--remote <url>]`
 - Audit locations: CLI runs write to `.ai-team/runs/<run_id>.jsonl` and HR decisions to `.ai-team/hr.jsonl`. Don't leave demo hires or status changes in the real `company/`; try them on a copy with `--company`.
 
 ## Architecture
@@ -78,10 +78,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **Owner decisions.** `resume` (adds iterations, back to `PLANNED`), `accept` (manual approval, needs an implementation, reported as Owner-approved) and `cancel`. A milestone report is written once all its tasks are `DONE` or `CANCELLED`.
 
 - **Execution (phase 4).**
-  - **Workspaces.** `src/workspace/` handles them under `<data>/workspaces/<project>/{main,tasks/<task>}`. A task copy records base hashes in `.ai-team-base.json`. `merge_into` is all-or-nothing and refuses files that `main` changed since the copy was taken.
-  - **Answer format and limits.** The Builder answers with `### FILE: path` plus a fenced block, parsed by `extract_files`. `validate_path` rejects `..`, absolute paths, drive letters, `.git`, build directories (`SKIP_DIRS`) and Windows reserved names. Limits: 60 files and 256 KB per file.
+  - **Git workspace.** `src/workspace/` keeps one git repository per project at `<data>/workspaces/<project>/`. `Workspace::open` creates it empty, with an initial commit holding the platform `.gitignore` and `core.autocrlf=false`.
+    - Each task works on `task/<id>`, created from `main`. A single working tree is enough because tasks are sequential.
+    - `start_task` and `checkout_main` first commit any leftover changes ("Save uncommitted work").
+    - Every Builder iteration is committed in `TaskWorkbench::verify` with the employee as author (`-c user.name=...`), whether it passed or not.
+    - `merge_task` runs `git merge --no-ff` as `EMP-ORCH-001`, and `merge --abort`s on a conflict so `main` stays untouched.
+    - Pushes go only to the Owner's `remote_url` (`project configure --remote`), with no force and `GIT_TERMINAL_PROMPT=0`: the task branch after every task, `main` after every merge. A failed push is reported in `RunSummary.push_errors` and task history and never changes the outcome. All git calls shell out to `git`.
+  - **Answer format and limits.** The Builder answers with `### FILE: path` plus a fenced block, or with `### DELETE: path`; `extract_files` returns an `AnswerFiles`. `.gitignore` is platform-managed. `validate_path` rejects `..`, absolute paths, drive letters, `.git`, build directories (`SKIP_DIRS`) and Windows reserved names. Limits: 60 files and 256 KB per file.
   - **Test runner.** `runner.rs` runs the Owner's `test_command` through `cmd /C` or `sh -c`, with `env_clear()` plus `ALLOWED_ENV`, so no secrets reach the tests. On timeout it kills the whole tree (`taskkill /T`) *before* dropping the shell; dropping first orphaned children (bug found in phase 4).
-  - **Workflow gates.** `Workbench` (`workbench.rs`) plugs into `Orchestrator::start`/`resume`. Per iteration the order is: briefing in the Builder prompt, Builder answers, `verify` writes the files and runs the tests, the Reviewer runs only if `Verification::passed()` and sees the platform report, otherwise the Builder gets the report as feedback. The project manager merges written files on `DONE` and on Owner `accept`; a merge conflict means `FAILED`.
+  - **Workflow gates.** `Workbench` (`workbench.rs`) plugs into `Orchestrator::start`/`resume`. Per iteration the order is: briefing in the Builder prompt, Builder answers, `verify` writes the files and runs the tests, the Reviewer runs only if `Verification::passed()` and sees the platform report, otherwise the Builder gets the report as feedback. The project manager merges the task branch on `DONE` and on Owner `accept`; a merge conflict means `FAILED`.
   - **Capabilities.** `write_workspace` and `run_tests` require `write_implementation`. The orchestrator checks the Builder holds what `Workbench::required_capabilities` returns.
   - **Metering.** `LlmProvider::generate` returns a `Completion { text, usage }`; `complete` is a convenience wrapper. `from_registry_with_providers` wraps the factory with `llm::metered` into a `UsageLedger`. `Orchestrator::mark` drains the ledger into `TeamState.usage`, and planning usage is stored per project. Optional `cost_per_mtok_*` in `ModelConfig` set prices.
   - **Database.** The schema is at version 2 and `Store::open` migrates version 1 in place.
@@ -94,4 +99,4 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `edit_contract` and `write_employee`, for breaking one rule at a time;
 - `ScriptedProvider`, which returns queued answers and records prompts; an empty queue makes the agent fail.
 
-`tests/execution.rs` covers phase 4: the gates, path safety, merge conflicts, capabilities and metering. Its test commands are cross-platform shell one-liners. `TestLlm`'s Builder writes `notes/result.md`, and it reports fake usage. `tests/projects.rs` covers phase 3 end to end with `TestLlm`, whose Planner also answers task-plan prompts with `test_task_plan()`: T1 → T2 → T3 across 2 milestones. Interrupted runs are simulated by saving a mid-run `TeamState` with `save_task_state`. `shipped_registry_is_valid_and_ready` keeps `company/employees` valid. Prefer `ScriptedProvider` over `TestLlm` when asserting on prompt contents.
+`tests/execution.rs` covers phase 4: the gates, path safety, per-iteration commits and their authors, git merge conflicts, deletions, pushes (to a local bare repo), capabilities and metering. The git tests need `git` on `PATH`. Its test commands are cross-platform shell one-liners. `TestLlm`'s Builder writes `notes/result.md`, and it reports fake usage. `tests/projects.rs` covers phase 3 end to end with `TestLlm`, whose Planner also answers task-plan prompts with `test_task_plan()`: T1 → T2 → T3 across 2 milestones. Interrupted runs are simulated by saving a mid-run `TeamState` with `save_task_state`. `shipped_registry_is_valid_and_ready` keeps `company/employees` valid. Prefer `ScriptedProvider` over `TestLlm` when asserting on prompt contents.

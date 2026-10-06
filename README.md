@@ -304,16 +304,17 @@ ulterioare ale fișierului JSON nu se aplică proiectului deja adăugat.
 
 ## Execuție reală (Faza 4)
 
-În proiecte, Builder-ul nu mai scrie doar text: răspunsul lui devine **fișiere** într-un workspace
-al taskului, platforma rulează **comanda de test stabilită de Owner**, iar munca intră în
-workspace-ul principal al proiectului doar după trei porți.
+În proiecte, Builder-ul nu mai scrie doar text: răspunsul lui devine **fișiere** pe branch-ul git
+al taskului, platforma rulează **comanda de test stabilită de Owner**, iar munca intră în `main`
+doar după trei porți.
 
 ```text
-Builder răspunde cu fișiere  ──>  platforma le scrie în workspace-ul taskului
+Builder răspunde cu fișiere  ──>  platforma le scrie pe branch-ul task/<id> și face commit
                                   └─> rulează test_command (ex. `cargo test`)
    poarta 1: fișiere valide + testele trec?   nu -> Builder primește rezultatul testelor (fără Reviewer)
    poarta 2: Reviewer-ul aprobă (vede dovada testelor, raportată de platformă)?
-   poarta 3: îmbinare fără conflict în workspace-ul principal?   nu -> task FAILED, decizia Owner-ului
+   poarta 3: git face merge în main fără conflict?   nu -> task FAILED, decizia Owner-ului
+   apoi: push automat spre remote-ul Owner-ului (dacă e configurat)
 ```
 
 **Comanda de test** se pune în JSON-ul proiectului sau ulterior:
@@ -348,13 +349,32 @@ workspace):
 ```python
 def word_count(text: str) -> int: ...
 ```
+### DELETE: texttools/old_helpers.py
 ````
 
-**Workspace-uri** (`data/workspaces/<proiect>/`):
+**Git** — fiecare proiect are un repository în `data/workspaces/<proiect>/`, creat gol la primul task:
 
-- `main/` — proiectul integrat (doar muncă aprobată, testată și îmbinată fără conflict);
-- `tasks/<task>/` — copia lui `main/` din momentul în care a pornit taskul; aici scrie Builder-ul
-  și aici rulează testele. Un task reluat își continuă propriul workspace.
+- `main` — doar muncă aprobată, testată și integrată;
+- `task/<id>` — branch-ul taskului, creat din `main`; **fiecare iterație a Builder-ului e un
+  commit** cu autorul angajatului (ex. `EMP-BUILD-001`) și rezultatul testelor în mesaj;
+- la aprobare, `EMP-ORCH-001` face `git merge --no-ff task/<id>` în `main`, cu mesaj
+  „Merge <task>: <titlu> — Approved by EMP-REV-001 after N iteration(s)”; un conflict anulează
+  merge-ul (`main` rămâne neatins) și oprește taskul;
+- un task oprit rămâne pe branch-ul lui — îl poți inspecta cu orice unealtă git
+  (`git log main..task/<id>`, `git diff main task/<id>`);
+- taskurile rulează pe rând, deci un singur working tree e suficient; între taskuri e pe `main`.
+
+**Push automat** spre remote-ul ales de Owner (agenții nu îl pot schimba):
+
+```powershell
+cargo run -- project configure demo-text-tools --remote https://github.com/<cont>/<repo>.git
+cargo run -- project configure demo-text-tools --remote ""     # doar commit-uri locale
+```
+
+După fiecare task se trimite branch-ul `task/<id>`, iar după fiecare merge și `main`. Niciodată cu
+force; folosește autentificarea git a sistemului (Git Credential Manager) și nu așteaptă parole în
+terminal. Un push eșuat nu schimbă rezultatul taskului — munca e în siguranță local, iar eroarea
+apare la `project run` și în istoricul taskului.
 
 **Siguranță:**
 
@@ -367,13 +387,12 @@ def word_count(text: str) -> int: ...
 - platforma acționează în workspace doar pentru un Builder cu permisiunile `write_workspace` (și
   `run_tests` când există comandă de test); ele cer `write_implementation`, deci un Reviewer nu le
   poate avea — Reviewer-ul rămâne read-only;
-- `task accept` (aprobarea manuală a Owner-ului) îmbină și el doar fără conflict.
+- `task accept` (aprobarea manuală a Owner-ului) face și el merge doar fără conflict, cu mesajul
+  „Accepted by the Owner (not approved by the Reviewer)”.
 
 **Consum:** fiecare apel de model e contorizat (tokeni de intrare/ieșire, din răspunsul
 serverului). `project status`, `project run` și `task show` arată totalurile; costul în USD apare
 dacă pui prețurile în contract (`cost_per_mtok_input`, `cost_per_mtok_output` în blocul `model:`).
-
-Integrarea cu **git** (branch per task în loc de copii) urmează după Faza 4.
 
 ## Reutilizare la alt proiect
 
@@ -393,5 +412,3 @@ Exemplu complet: testul `lead_can_delegate_to_subagents_with_nested_audit_spans`
 
 Subagenții din registru (`employee_type: subagent`) sunt validați și apar în organigramă, dar
 execuția lor automată vine odată cu Worker Gateway (Faza 5 din `firma.md`).
-#   a i - t e a m - r u s t  
- 

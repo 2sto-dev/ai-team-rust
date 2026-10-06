@@ -26,6 +26,9 @@ pub struct ProjectConfig {
     pub test_command: Option<String>,
     #[serde(default = "default_test_timeout_secs")]
     pub test_timeout_secs: u64,
+    /// Git remote the platform pushes `main` and task branches to (Owner-chosen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_url: Option<String>,
 }
 
 fn default_test_timeout_secs() -> u64 {
@@ -37,8 +40,13 @@ fn default_test_timeout_secs() -> u64 {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Verification {
     pub files_written: Vec<String>,
+    #[serde(default)]
+    pub files_deleted: Vec<String>,
     pub problems: Vec<String>,
     pub test: Option<TestRun>,
+    /// The commit that recorded this iteration on the task branch.
+    #[serde(default)]
+    pub commit: Option<String>,
 }
 
 impl Verification {
@@ -56,6 +64,15 @@ impl Verification {
                 self.files_written.join(", ")
             }
         );
+        if !self.files_deleted.is_empty() {
+            report.push_str(&format!(
+                "files deleted: {}\n",
+                self.files_deleted.join(", ")
+            ));
+        }
+        if let Some(commit) = &self.commit {
+            report.push_str(&format!("commit: {commit}\n"));
+        }
         for problem in &self.problems {
             report.push_str(&format!("problem: {problem}\n"));
         }

@@ -1,0 +1,2 @@
+# Text files are stored with LF in the repository on every OS.
+* text=auto eol=lf

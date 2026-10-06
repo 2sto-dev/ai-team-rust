@@ -794,27 +794,28 @@ Continut planificat initial:
 - milestones;
 - reluarea taskurilor dupa escaladare (sectiunea 13.1).
 
-### Faza 4 - executie reala (minima) (REALIZATA, fara git)
+### Faza 4 - executie reala (minima) (REALIZATA)
 
 Realizat in `ai-team-rust`:
 
-- workspace per task (`data/workspaces/<proiect>/tasks/<task>`), copie a workspace-ului principal
-  din momentul pornirii; Builder-ul raspunde cu fisiere (`### FILE: cale` + bloc de cod), validate
-  strict (fara `..`, cai absolute, `.git`, directoare de build, nume rezervate; limite de numar si
-  marime);
+- Git branch per task: fiecare proiect are un repository (`data/workspaces/<proiect>`), creat gol;
+  fiecare task lucreaza pe `task/<id>`, fiecare iteratie a Builder-ului e un commit cu autorul
+  angajatului, iar munca aprobata intra in `main` printr-un merge git (`--no-ff`); push automat
+  (fara force) spre remote-ul ales de Owner;
+- Builder-ul raspunde cu fisiere (`### FILE: cale` + bloc de cod) si stergeri (`### DELETE: cale`),
+  validate strict (fara `..`, cai absolute, `.git`, directoare de build, nume rezervate; limite);
 - test runner: comanda de test e a Owner-ului (`test_command`), agentii nu o pot alege; ruleaza in
   workspace-ul taskului, cu timeout (se opreste tot arborele de procese) si fara secrete in mediu;
 - approval gates: (1) fisiere valide si teste trecute - altfel Builder-ul primeste rezultatul
   testelor si munca nu ajunge la Reviewer; (2) aprobarea Reviewer-ului, care vede dovada testelor
-  raportata de platforma; (3) imbinare in workspace-ul principal doar fara conflict;
+  raportata de platforma; (3) merge git in `main` doar fara conflict;
 - reviewer read-only (nu poate avea `write_workspace`/`run_tests`, care cer `write_implementation`);
 - permisiuni noi efectiv aplicate: `write_workspace`, `run_tests`;
 - contorizare tokeni (si cost, cu preturi optionale in contract) per apel, per task si per proiect;
 - depozit de artefacte adresat prin hash (din faza 3).
 
-Ramas: Git branch per task (urmeaza imediat, in locul copiilor de workspace); sandbox real pentru
-teste (Docker nu e instalat - acum ruleaza local, cu restrictii); stergerea de fisiere de catre
-Builder nu e suportata.
+Ramas: sandbox real pentru teste (Docker nu e instalat - acum ruleaza local, cu restrictii);
+pornirea unui proiect dintr-un repository existent; executie paralela (ar cere `git worktree`).
 
 Continut planificat initial:
 

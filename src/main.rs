@@ -124,6 +124,9 @@ enum ProjectAction {
         test_command: Option<String>,
         #[arg(long)]
         test_timeout: Option<u64>,
+        /// Git remote the platform pushes main and task branches to; "" removes it.
+        #[arg(long)]
+        remote: Option<String>,
     },
 }
 
@@ -605,6 +608,9 @@ async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) 
             for report in &summary.reports {
                 println!("Milestone report: {}", report.display());
             }
+            for error in &summary.push_errors {
+                println!("WARNING: {error}");
+            }
             println!("Project {project_id}: {}", summary.project_status);
             println!("Usage so far: {}", manager.project_usage(&project_id)?);
             print_owner_actions(&store, &project_id)?;
@@ -613,8 +619,16 @@ async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) 
             project_id,
             test_command,
             test_timeout,
+            remote,
         } => {
-            let config = manager.configure(&project_id, test_command, test_timeout)?;
+            let config = manager.configure(&project_id, test_command, test_timeout, remote)?;
+            println!(
+                "{project_id}: remote {}",
+                config
+                    .remote_url
+                    .as_deref()
+                    .unwrap_or("none (commits stay local)")
+            );
             println!(
                 "{project_id}: test command {}, timeout {} s",
                 config
@@ -676,8 +690,16 @@ async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) 
                     .unwrap_or_else(|| "none".to_string())
             );
             println!(
-                "Main workspace: {}",
+                "Repository: {} (branch main = approved work)",
                 manager.main_workspace(&project_id).display()
+            );
+            println!(
+                "Remote: {}",
+                project
+                    .config
+                    .remote_url
+                    .as_deref()
+                    .unwrap_or("none (commits stay local)")
             );
             println!("Usage: {}", manager.project_usage(&project_id)?);
             print_owner_actions(&store, &project_id)?;

@@ -26,17 +26,25 @@ pub trait Workbench: Send + Sync {
     fn verify<'a>(&'a self, implementation: &'a Artifact) -> BoxFuture<'a, Result<Verification>>;
 }
 
-/// Writes into one task's workspace and runs the project's test command there.
+/// Applies one task's answers on its branch, runs the project's test command, and commits
+/// every iteration (as the employee who wrote it).
 pub struct TaskWorkbench {
     workspace: Workspace,
+    task_id: String,
     test_command: Option<String>,
     test_timeout: Duration,
 }
 
 impl TaskWorkbench {
-    pub fn new(workspace: Workspace, test_command: Option<String>, test_timeout: Duration) -> Self {
+    pub fn new(
+        workspace: Workspace,
+        task_id: impl Into<String>,
+        test_command: Option<String>,
+        test_timeout: Duration,
+    ) -> Self {
         Self {
             workspace,
+            task_id: task_id.into(),
             test_command: test_command.filter(|command| !command.trim().is_empty()),
             test_timeout,
         }
@@ -64,8 +72,10 @@ impl Workbench for TaskWorkbench {
              HOW YOUR ANSWER IS APPLIED:\n\
              - Write every file you create or change as a heading `### FILE: relative/path` \
              followed by ONE fenced code block with the COMPLETE file content.\n\
+             - To delete a file, write a heading `### DELETE: relative/path` (no code block).\n\
              - Paths are relative to the workspace root; no `..` and no absolute paths.\n\
-             - Files you do not mention stay as they are; deleting files is not supported.\n\
+             - Files you do not mention stay as they are. Each answer is committed on the \
+             task's git branch.\n\
              {tests}",
             self.workspace.snapshot(SNAPSHOT_BUDGET_CHARS)?
         ))
@@ -81,16 +91,20 @@ impl Workbench for TaskWorkbench {
 
     fn verify<'a>(&'a self, implementation: &'a Artifact) -> BoxFuture<'a, Result<Verification>> {
         Box::pin(async move {
-            let (files, mut problems) = extract_files(&implementation.content);
-            if files.is_empty() && problems.is_empty() {
+            let answer = extract_files(&implementation.content);
+            let mut problems = answer.problems;
+            if answer.files.is_empty() && answer.deletions.is_empty() && problems.is_empty() {
                 problems.push(
                     "no files found: write each file as `### FILE: relative/path` followed by a \
                      fenced code block"
                         .to_string(),
                 );
             }
-            let (files_written, write_problems) = self.workspace.write_files(&files)?;
+            let (files_written, write_problems) = self.workspace.write_files(&answer.files)?;
+            let (files_deleted, delete_problems) =
+                self.workspace.delete_files(&answer.deletions)?;
             problems.extend(write_problems);
+            problems.extend(delete_problems);
 
             let test = match (&self.test_command, problems.is_empty()) {
                 (Some(command), true) => {
@@ -99,10 +113,33 @@ impl Workbench for TaskWorkbench {
                 _ => None,
             };
 
+            // Every iteration is recorded, passing or not: the branch is the task's history.
+            let changed: Vec<String> = files_written
+                .iter()
+                .chain(&files_deleted)
+                .cloned()
+                .collect();
+            let outcome = match (&test, problems.is_empty()) {
+                (_, false) => "rejected by the platform (invalid answer)".to_string(),
+                (Some(test), true) if test.passed => format!("tests passed (`{}`)", test.command),
+                (Some(test), true) => format!("tests FAILED (`{}`)", test.command),
+                (None, true) => "no test command".to_string(),
+            };
+            let commit = self.workspace.commit_paths(
+                &changed,
+                &implementation.author,
+                &format!(
+                    "{}: iteration {}\n\nVerification: {outcome}",
+                    self.task_id, implementation.revision
+                ),
+            )?;
+
             Ok(Verification {
                 files_written,
+                files_deleted,
                 problems,
                 test,
+                commit,
             })
         })
     }

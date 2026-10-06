@@ -29,6 +29,8 @@ pub struct RunSummary {
     pub executed: Vec<(String, TaskStatus)>,
     /// Milestone reports written in this call.
     pub reports: Vec<PathBuf>,
+    /// Pushes to the project's remote that failed (the work itself is safe locally).
+    pub push_errors: Vec<String>,
     pub project_status: ProjectStatus,
 }
 
@@ -49,32 +51,52 @@ impl<'a> ProjectManager<'a> {
         self.store
     }
 
-    /// The project's integrated workspace (`<data>/workspaces/<project>/main`).
+    /// The project's git repository (`<data>/workspaces/<project>`); `main` holds approved work.
     pub fn main_workspace(&self, project_id: &str) -> PathBuf {
-        self.store
-            .root()
-            .join("workspaces")
-            .join(project_id)
-            .join("main")
+        self.store.root().join("workspaces").join(project_id)
     }
 
-    fn task_workspace(&self, project_id: &str, task_id: &str) -> PathBuf {
-        self.store
-            .root()
-            .join("workspaces")
-            .join(project_id)
-            .join("tasks")
-            .join(task_id)
+    /// Opens (creating an empty one for a new project) the project's repository.
+    pub fn repository(&self, project: &ProjectConfig) -> Result<Workspace> {
+        let workspace = Workspace::open(&self.main_workspace(&project.project_id))?;
+        workspace.set_remote(project.remote_url.as_deref())?;
+        Ok(workspace)
     }
 
-    /// Owner-only settings that can change after `project add`.
+    /// Pushes branches to the Owner's remote, if one is configured. A failed push never
+    /// changes a task's outcome; it is reported and retried with the next push.
+    fn push(
+        &self,
+        project: &ProjectConfig,
+        workspace: &Workspace,
+        branches: &[String],
+    ) -> Vec<String> {
+        if project.remote_url.is_none() {
+            return Vec::new();
+        }
+        let mut errors = Vec::new();
+        for branch in branches {
+            if let Err(err) = workspace.push(branch) {
+                tracing::warn!(%branch, error = %format!("{err:#}"), "push failed");
+                errors.push(format!("push {branch}: {err:#}"));
+            }
+        }
+        errors
+    }
+
+    /// Owner-only settings that can change after `project add`. An empty string removes the
+    /// test command or the remote.
     pub fn configure(
         &self,
         project_id: &str,
         test_command: Option<String>,
         test_timeout_secs: Option<u64>,
+        remote_url: Option<String>,
     ) -> Result<ProjectConfig> {
         let mut config = self.store.project(project_id)?.config;
+        if let Some(url) = remote_url {
+            config.remote_url = (!url.trim().is_empty()).then(|| url.trim().to_string());
+        }
         if let Some(command) = test_command {
             config.test_command = (!command.trim().is_empty()).then_some(command);
         }
@@ -88,8 +110,8 @@ impl<'a> ProjectManager<'a> {
             None,
             "configure",
             Some(&format!(
-                "test_command={:?}, test_timeout_secs={}",
-                config.test_command, config.test_timeout_secs
+                "test_command={:?}, test_timeout_secs={}, remote_url={:?}",
+                config.test_command, config.test_timeout_secs, config.remote_url
             )),
         )?;
         Ok(config)
@@ -201,14 +223,16 @@ impl<'a> ProjectManager<'a> {
 
         let mut executed = Vec::new();
         let mut reports = Vec::new();
+        let mut push_errors = Vec::new();
         while max_tasks.is_none_or(|max| executed.len() < max) {
             let Some(task) = self.next_task(project_id)? else {
                 break;
             };
             self.store
                 .set_project_status(project_id, ProjectStatus::InProgress)?;
-            let status = self.execute(&project.config, &task).await?;
+            let (status, errors) = self.execute(&project.config, &task).await?;
             executed.push((task.id.clone(), status));
+            push_errors.extend(errors);
             reports.extend(self.write_milestone_reports(&project.config)?);
         }
 
@@ -216,6 +240,7 @@ impl<'a> ProjectManager<'a> {
         Ok(RunSummary {
             executed,
             reports,
+            push_errors,
             project_status: self.update_project_status(project_id)?,
         })
     }
@@ -275,7 +300,12 @@ impl<'a> ProjectManager<'a> {
         Ok(())
     }
 
-    async fn execute(&self, project: &ProjectConfig, task: &TaskRecord) -> Result<TaskStatus> {
+    /// Runs one task on its branch. Returns its final status and any failed pushes.
+    async fn execute(
+        &self,
+        project: &ProjectConfig,
+        task: &TaskRecord,
+    ) -> Result<(TaskStatus, Vec<String>)> {
         let task_text = self.compose_task(project, task)?;
 
         // The task runs under its own iteration budget and is judged on its own criteria.
@@ -283,11 +313,11 @@ impl<'a> ProjectManager<'a> {
         config.max_iterations = task.iteration_budget;
         config.acceptance_criteria = task.acceptance_criteria.clone();
 
-        let main = self.main_workspace(&project.project_id);
-        let workspace =
-            Workspace::prepare(&main, &self.task_workspace(&project.project_id, &task.id))?;
+        let workspace = self.repository(project)?;
+        workspace.start_task(&task.id)?;
         let workbench = TaskWorkbench::new(
             workspace.clone(),
+            task.id.clone(),
             project.test_command.clone(),
             Duration::from_secs(project.test_timeout_secs),
         );
@@ -323,15 +353,27 @@ impl<'a> ProjectManager<'a> {
             _ => TaskStatus::Failed,
         };
 
-        // Approval gate 3: approved work enters the main workspace only without conflicts.
+        // Approval gate 3: git merges the task branch into main, or the task stops.
+        let mut branches = vec![crate::workspace::task_branch(&task.id)];
         if status == TaskStatus::Done {
-            match workspace.merge_into(&main, &result.state.written_files) {
-                Ok(files) => {
+            let reviewer = result
+                .state
+                .team
+                .as_ref()
+                .map_or("the Reviewer", |team| team.reviewer.as_str())
+                .to_string();
+            let message = format!(
+                "Merge {}: {}\n\nApproved by {reviewer} after {} iteration(s).",
+                task.id, task.title, result.state.iteration
+            );
+            match workspace.merge_task(&task.id, &message) {
+                Ok(commit) => {
                     result.state.history.push(format!(
-                        "platform: merged {} file(s) into the main workspace",
-                        files.len()
+                        "platform: merged {} into main ({commit})",
+                        crate::workspace::task_branch(&task.id)
                     ));
                     self.store.mark_merged(&task.id)?;
+                    branches.push(crate::workspace::MAIN_BRANCH.to_string());
                 }
                 Err(err) => {
                     status = TaskStatus::Failed;
@@ -343,6 +385,11 @@ impl<'a> ProjectManager<'a> {
                         .push("platform: merge FAILED".to_string());
                 }
             }
+        }
+        workspace.checkout_main()?;
+        let push_errors = self.push(project, &workspace, &branches);
+        for error in &push_errors {
+            result.state.history.push(format!("platform: {error}"));
         }
         self.store
             .save_task_state(&task.id, status, &result.state)?;
@@ -357,7 +404,7 @@ impl<'a> ProjectManager<'a> {
         if let Some(err) = &result.error {
             tracing::warn!(task = %task.id, error = %format!("{err:#}"), "task failed");
         }
-        Ok(status)
+        Ok((status, push_errors))
     }
 
     /// The task text every agent sees: the task itself, project-level context, the approved
@@ -453,19 +500,27 @@ impl<'a> ProjectManager<'a> {
             "task {task_id} has no implementation to accept"
         );
 
-        // The Owner accepts the work as it is in the task workspace; it still merges only
-        // without conflicts.
-        let written = self
-            .store
-            .load_task_state(task_id)?
-            .map(|state| state.written_files)
-            .unwrap_or_default();
-        let main = self.main_workspace(&task.project_id);
-        let workspace = Workspace::prepare(&main, &self.task_workspace(&task.project_id, task_id))?;
+        // The Owner accepts the work as it is on the task branch; git still refuses a
+        // conflicting merge.
+        let project = self.store.project(&task.project_id)?.config;
+        let workspace = self.repository(&project)?;
+        let message = format!(
+            "Merge {task_id}: {}\n\nAccepted by the Owner (not approved by the Reviewer).{}",
+            task.title,
+            note.map(|note| format!("\nNote: {note}"))
+                .unwrap_or_default()
+        );
         workspace
-            .merge_into(&main, &written)
+            .merge_task(task_id, &message)
             .with_context(|| format!("cannot accept {task_id}"))?;
         self.store.mark_merged(task_id)?;
+        for error in self.push(
+            &project,
+            &workspace,
+            &[crate::workspace::MAIN_BRANCH.to_string()],
+        ) {
+            tracing::warn!(task = %task_id, %error, "push after acceptance failed");
+        }
 
         self.store
             .add_owner_decision(&task.project_id, Some(task_id), "accept", note)?;
