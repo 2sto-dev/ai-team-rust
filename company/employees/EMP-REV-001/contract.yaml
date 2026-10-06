@@ -1,0 +1,26 @@
+employee_id: EMP-REV-001
+name: Reviewer
+title: Head of Quality
+department: quality
+manager_id: EMP-ORCH-001
+employee_type: agent
+function: reviewer
+status: active
+model:
+  provider: ollama
+  model: qwen2.5:14b
+  base_url: http://10.10.0.14:11434
+  temperature: 0.1
+  num_ctx: 32768
+  num_predict: 1200
+  timeout_secs: 180
+skills:
+  - code review
+  - security review
+  - testability
+permissions:
+  - review_work
+  - delegate_subtasks
+forbidden_actions:
+  - modify_implementation
+  - deploy_production

@@ -1,0 +1,18 @@
+{
+  "project_id": "generic-project",
+  "name": "Generic Software Project",
+  "objective": "Design and implement maintainable software with explicit boundaries, testable contracts and controlled changes.",
+  "max_iterations": 3,
+  "rules": [
+    "Keep architecture modular.",
+    "Keep secrets outside source code.",
+    "Do not silently change approved public contracts.",
+    "Do not claim tests passed unless they were actually executed."
+  ],
+  "acceptance_criteria": [
+    "The design has explicit module boundaries.",
+    "Failure handling is defined.",
+    "The implementation approach is testable.",
+    "Reviewer feedback is resolved before approval."
+  ]
+}

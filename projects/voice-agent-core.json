@@ -1,0 +1,20 @@
+{
+  "project_id": "voice-agent-core",
+  "name": "Voice Agent Core",
+  "objective": "Build a modular and scalable voice-agent core that can later host independent business modules such as Dental, HVAC and ITP without coupling those domains to the core.",
+  "max_iterations": 4,
+  "rules": [
+    "The Voice Core must remain domain-agnostic.",
+    "Business-domain modules are plugins or adapters, not core dependencies.",
+    "Public contracts must be explicit and versionable.",
+    "Security and observability are first-class requirements.",
+    "Do not claim tests passed unless they were actually executed."
+  ],
+  "acceptance_criteria": [
+    "Architecture separates telephony, audio, speech and intelligence concerns.",
+    "Failure, timeout and retry behavior is explicitly defined.",
+    "Components can be replaced through interfaces or adapters.",
+    "Tests map to public contracts.",
+    "Dental, HVAC and ITP modules can be added without changing the core contract."
+  ]
+}

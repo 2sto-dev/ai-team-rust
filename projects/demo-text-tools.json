@@ -1,0 +1,18 @@
+{
+  "project_id": "demo-text-tools",
+  "name": "Demo: text tools (Python)",
+  "objective": "Build a tiny pure-Python package `texttools` with three functions: slugify(text) -> str (lowercase, ASCII, words joined by '-'), word_count(text) -> int, and is_palindrome(text) -> bool (ignoring case, spaces and punctuation). Every function has unit tests.",
+  "max_iterations": 3,
+  "rules": [
+    "Plan at most 3 tasks.",
+    "Python 3 standard library only; no third-party packages.",
+    "Package code lives in texttools/ (with __init__.py); tests live in tests/ as test_*.py files using unittest.",
+    "Do not claim tests passed: the platform runs them."
+  ],
+  "acceptance_criteria": [
+    "python -m unittest discover -s tests passes.",
+    "Each function has at least two unit tests, including an edge case."
+  ],
+  "test_command": "python -m unittest discover -s tests -t . -v",
+  "test_timeout_secs": 120
+}

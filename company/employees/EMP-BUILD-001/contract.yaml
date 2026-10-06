@@ -1,0 +1,29 @@
+employee_id: EMP-BUILD-001
+name: Builder
+title: Head of Engineering
+department: engineering
+manager_id: EMP-ORCH-001
+employee_type: agent
+function: builder
+status: active
+model:
+  provider: ollama
+  model: qwen3-coder:30b
+  base_url: http://10.10.0.14:11434
+  temperature: 0.1
+  num_ctx: 32768
+  num_predict: 8192
+  timeout_secs: 180
+skills:
+  - implementation
+  - testing
+  - integration
+permissions:
+  - write_implementation
+  - delegate_subtasks
+  - write_workspace
+  - run_tests
+forbidden_actions:
+  - deploy_production
+  - approve_own_work
+  - read_secrets_without_grant

@@ -1,0 +1,27 @@
+employee_id: EMP-ARCH-001
+name: Architect
+title: Head of Architecture
+department: architecture
+manager_id: EMP-ORCH-001
+employee_type: agent
+function: architect
+status: active
+model:
+  provider: ollama
+  model: qwen3-coder:30b
+  base_url: http://10.10.0.14:11434
+  temperature: 0.1
+  num_ctx: 32768
+  num_predict: 8192
+  timeout_secs: 180
+skills:
+  - software architecture
+  - interface design
+  - security and scalability review
+permissions:
+  - write_specification
+  - delegate_subtasks
+forbidden_actions:
+  - deploy_production
+  - approve_final_implementation
+  - change_project_objective

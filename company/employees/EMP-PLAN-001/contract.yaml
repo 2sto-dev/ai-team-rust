@@ -1,0 +1,24 @@
+employee_id: EMP-PLAN-001
+name: Planner
+title: Head of Planning
+department: management
+manager_id: EMP-ORCH-001
+employee_type: agent
+function: planner
+status: active
+model:
+  provider: ollama
+  model: qwen3-coder:30b
+  base_url: http://10.10.0.14:11434
+  temperature: 0.1
+  num_ctx: 32768
+  num_predict: 4096
+  timeout_secs: 180
+skills:
+  - project planning
+  - staffing
+permissions:
+  - propose_plan
+forbidden_actions:
+  - change_task_state
+  - hire_without_owner_approval

@@ -1,0 +1,12 @@
+# Orchestrator control plane: platform code, not an AI model.
+employee_id: EMP-ORCH-001
+name: Orchestrator
+title: Project Director
+department: management
+manager_id: OWNER
+employee_type: system
+function: orchestrator
+status: active
+forbidden_actions:
+  - bypass_owner_policies
+  - grant_uncontrolled_secret_access

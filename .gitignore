@@ -1,0 +1,7 @@
+/target/
+.env
+.ai-team/
+.idea/
+.vscode/
+*.log
+/data/
