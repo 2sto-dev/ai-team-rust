@@ -10,7 +10,7 @@ use ai_team::{
     domain::{ProjectConfig, Role},
     llm::{LlmProvider, ProviderFactory},
     orchestrator::Orchestrator,
-    project::{ProjectManager, Store, TaskStatus},
+    project::{ProjectManager, ProjectStatus, Store, TaskStatus},
     registry::Registry,
 };
 use common::{ScriptedProvider, TestLlm, edit_contract, project, sample_company, test_providers};
@@ -475,5 +475,106 @@ async fn unreachable_remote_does_not_fail_the_task() {
     assert!(
         env.main_file("notes/result.md").is_file(),
         "work is safe locally"
+    );
+}
+
+#[tokio::test]
+async fn resumed_task_resolves_conflicts_with_newer_main() {
+    let env = env();
+    env.planned(config(1, None)).await; // TestLlm's reviewer rejects the first review
+    let orchestrator = env.orchestrator(test_providers());
+    let manager = ProjectManager::new(&env.store, &orchestrator);
+    manager.run("app", Some(1)).await.unwrap();
+    assert_eq!(
+        env.store.task("app-T01").unwrap().status,
+        TaskStatus::HumanReviewRequired
+    );
+
+    // Someone committed a different notes/result.md on main meanwhile.
+    fs::create_dir_all(env.main_file("notes")).unwrap();
+    fs::write(
+        env.main_file("notes/result.md"),
+        "from main
+",
+    )
+    .unwrap();
+    env.git(&["add", "notes/result.md"]);
+    env.git(&[
+        "-c",
+        "user.name=Owner",
+        "-c",
+        "user.email=o@x",
+        "commit",
+        "-q",
+        "-m",
+        "hand edit",
+    ]);
+
+    manager.resume_task("app-T01", None, 2).unwrap();
+    let summary = manager.run("app", Some(1)).await.unwrap();
+    assert_eq!(
+        summary.executed,
+        [("app-T01".to_string(), TaskStatus::Done)]
+    );
+
+    let state = env.store.load_task_state("app-T01").unwrap().unwrap();
+    assert!(
+        state
+            .history
+            .iter()
+            .any(|item| item.contains("conflicts for the Builder: notes/result.md"))
+    );
+    let merged = fs::read_to_string(env.main_file("notes/result.md")).unwrap();
+    assert!(
+        !merged.contains("<<<<<<<"),
+        "the resolution, not the markers, reached main"
+    );
+}
+
+#[tokio::test]
+async fn owner_request_with_a_file_runs_without_a_plan() {
+    let env = env();
+    env.store.add_project(&config(3, None)).unwrap(); // no plan at all
+    let orchestrator = env.orchestrator(test_providers());
+    let manager = ProjectManager::new(&env.store, &orchestrator);
+
+    let input = env.root.join("sales.csv");
+    fs::write(
+        &input,
+        "region,amount
+north,10
+",
+    )
+    .unwrap();
+    let inputs = manager.add_inputs("app", &[input]).unwrap();
+    assert_eq!(inputs, ["inputs/sales.csv"]);
+    assert_eq!(
+        env.git(&["log", "-1", "--format=%an|%s", "main"]),
+        "OWNER|Owner inputs"
+    );
+
+    let task = manager
+        .add_request("app", "Summarise sales.csv per region", &inputs)
+        .unwrap();
+    assert_eq!(task.id, "app-T01");
+    assert!(task.description.contains("inputs/sales.csv"));
+
+    let summary = manager.run("app", None).await.unwrap();
+    assert_eq!(summary.executed, [(task.id.clone(), TaskStatus::Done)]);
+    assert_eq!(summary.project_status, ProjectStatus::Done);
+    assert!(env.main_file("inputs/sales.csv").is_file());
+
+    // A new request reopens the finished project.
+    let second = manager.add_request("app", "Also add a chart", &[]).unwrap();
+    assert_eq!(second.id, "app-T02");
+    assert_eq!(
+        env.store.project("app").unwrap().status,
+        ProjectStatus::Planned
+    );
+    let decisions = env.store.owner_decisions("app").unwrap();
+    assert!(decisions.iter().any(|d| d.decision == "inputs"));
+    assert_eq!(
+        decisions.iter().filter(|d| d.decision == "request").count(),
+        2
     );
 }

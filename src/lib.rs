@@ -3,6 +3,7 @@ pub mod audit;
 pub mod config;
 pub mod domain;
 pub mod llm;
+pub mod mcp;
 pub mod orchestrator;
 pub mod planner;
 pub mod project;

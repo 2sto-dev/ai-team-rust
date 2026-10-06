@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 are implemented, including git. The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
+`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 and 5a are implemented. Phase 5a covers subagents, skill packs, MCP and the veto. The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
 
 ## Commands
 
@@ -24,6 +24,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - `task show <id>`
     - Owner decisions: `task resume <id> [--note] [--iterations N]`, `task accept <id>`, `task cancel <id>`
     - `project configure <id> [--test-command "..."] [--test-timeout N] [--remote <url>]`
+    - `console [--project ID]` is the interactive Owner console (`owner_console` in `main.rs`).
+      - You type a multi-line request (an empty line sends it), then file paths (quotes from Windows drag-and-drop are stripped) and a test command for a new project.
+      - It calls `owner_request` and shows progress live (`ProjectManager::with_progress`: each new history line printed from the checkpoint).
+      - It then asks resume/accept/cancel for stopped tasks. Commands: `/nou`, `/proiect <id>`, `/status`, `/ajutor`, `/iesire`.
+    - `request "<prompt>" [--file F]... [--project ID] [--test-command C] [--plan [--yes]]` is the Owner's one-shot entry.
+      - It creates a project, or adds to one with `--project`, and commits the files to `inputs/` on main as `OWNER` (`ProjectManager::add_inputs`).
+      - The prompt becomes a task with `add_request`: an `"Owner requests"` milestone, no plan approval needed, and a done project reopens.
+      - Then it runs the project.
+      - File previews (the first 40 lines of text files) go into the project objective, so every agent sees them.
 - Audit locations: CLI runs write to `.ai-team/runs/<run_id>.jsonl` and HR decisions to `.ai-team/hr.jsonl`. Don't leave demo hires or status changes in the real `company/`; try them on a copy with `--company`.
 
 ## Architecture
@@ -81,6 +90,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **Git workspace.** `src/workspace/` keeps one git repository per project at `<data>/workspaces/<project>/`. `Workspace::open` creates it empty, with an initial commit holding the platform `.gitignore` and `core.autocrlf=false`.
     - Each task works on `task/<id>`, created from `main`. A single working tree is enough because tasks are sequential.
     - `start_task` and `checkout_main` first commit any leftover changes ("Save uncommitted work").
+    - For an existing branch, `start_task` merges `main` into it (`sync_with_main`). Conflicts are committed with their markers on the task branch, and the conflicted files are returned. `TaskWorkbench::with_conflicts` puts them at the top of the Builder briefing, so resolving them becomes Builder work, checked by tests and review. This came from a real run, where a stale branch conflicted on `__init__.py` at the final merge.
     - Every Builder iteration is committed in `TaskWorkbench::verify` with the employee as author (`-c user.name=...`), whether it passed or not.
     - `merge_task` runs `git merge --no-ff` as `EMP-ORCH-001`, and `merge --abort`s on a conflict so `main` stays untouched.
     - Pushes go only to the Owner's `remote_url` (`project configure --remote`), with no force and `GIT_TERMINAL_PROMPT=0`: the task branch after every task, `main` after every merge. A failed push is reported in `RunSummary.push_errors` and task history and never changes the outcome. All git calls shell out to `git`.
@@ -91,6 +101,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **Metering.** `LlmProvider::generate` returns a `Completion { text, usage }`; `complete` is a convenience wrapper. `from_registry_with_providers` wraps the factory with `llm::metered` into a `UsageLedger`. `Orchestrator::mark` drains the ledger into `TeamState.usage`, and planning usage is stored per project. Optional `cost_per_mtok_*` in `ModelConfig` set prices.
   - **Database.** The schema is at version 2 and `Store::open` migrates version 1 in place.
 
+- **Phase 5a: subagents, skills, MCP.**
+  - **Skill packs.** They live in `company/skills/<id>/SKILL.md` (optional YAML front matter) and are referenced by `skill_packs` in a contract. `Registry::system_prompt` appends them to the job description; always use it, never `job_description` directly, when building agents.
+  - **MCP servers.** The catalog is `company/mcp.yaml` (`McpCatalog`); a contract references servers through `mcp_servers`. `src/mcp.rs` is a stdio JSON-RPC client: handshake, `tools/list` with pagination, `tools/call`. Servers get `env_clear` plus `allowed_env` plus `env`/`env_from`. Server-initiated requests are declined. `Toolbox` (one per employee, built by `Registry::toolbox_for`) starts servers lazily and exposes tools as `<server>__<tool>`. A failing tool call becomes an error outcome for the model, not a task failure.
+  - **Tool calling.** `LlmProvider::chat(system, messages, tools)` is the core of `HttpChatProvider` for all three dialects; `generate` wraps it. `agents::tooling::answer` runs at most 8 tool rounds per answer and audits every `TOOL_CALL`. Every agent and specialist answers through it.
+  - **Delegation.** `agents/lead.rs::BuilderLead` is used by `staffing::build_team` when the Builder has `delegate_subtasks` and active subagents with `write_implementation`.
+    - Each iteration it asks for a split (`DELEGATION_HEADING`), which `validate_delegation` checks: team members only, at most 4 subtasks, disjoint file ownership.
+    - A rejected split is retried once, then the lead works solo.
+    - Each `Specialist` gets only its subtask and files. Files outside a subtask are dropped and recorded in `SUBTASK_DONE`.
+  - **Reviewer advisors.** Reviewer subagents with `review_work` advise as `Advisor`. A `veto_review` advisor's `CHANGES_REQUIRED` overrides the Reviewer (`VETO_APPLIED`). A failing or invalid veto advisor counts as a rejection (fail closed).
+  - **Validation rules.** The registry rejects unknown skill packs or servers, a subagent with servers its manager lacks, `veto_review` outside a reviewer's subagent, and duplicate entries. `Role::Specialist` meters subagent calls.
+
 ## Tests
 
 `tests/common/mod.rs` provides:
@@ -99,4 +120,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `edit_contract` and `write_employee`, for breaking one rule at a time;
 - `ScriptedProvider`, which returns queued answers and records prompts; an empty queue makes the agent fail.
 
-`tests/execution.rs` covers phase 4: the gates, path safety, per-iteration commits and their authors, git merge conflicts, deletions, pushes (to a local bare repo), capabilities and metering. The git tests need `git` on `PATH`. Its test commands are cross-platform shell one-liners. `TestLlm`'s Builder writes `notes/result.md`, and it reports fake usage. `tests/projects.rs` covers phase 3 end to end with `TestLlm`, whose Planner also answers task-plan prompts with `test_task_plan()`: T1 → T2 → T3 across 2 milestones. Interrupted runs are simulated by saving a mid-run `TeamState` with `save_task_state`. `shipped_registry_is_valid_and_ready` keeps `company/employees` valid. Prefer `ScriptedProvider` over `TestLlm` when asserting on prompt contents.
+`tests/subagents.rs` covers phase 5a:
+- MCP and tool calling, against the shipped `pydoc` server (needs `python`) and an Ollama-shaped HTTP fake;
+- delegation with dropped out-of-scope files;
+- solo fallback after an invalid split;
+- the veto.
+
+`TestLlm` answers delegation requests (one `work/<id>.txt` per team member), plays Specialist (writes its owned files, or approves when acting as an advisor) and reports fake usage. `tests/execution.rs` covers phase 4: the gates, path safety, per-iteration commits and their authors, git merge conflicts, deletions, pushes (to a local bare repo), capabilities and metering. The git tests need `git` on `PATH`. Its test commands are cross-platform shell one-liners. `TestLlm`'s Builder writes `notes/result.md`, and it reports fake usage. `tests/projects.rs` covers phase 3 end to end with `TestLlm`, whose Planner also answers task-plan prompts with `test_task_plan()`: T1 → T2 → T3 across 2 milestones. Interrupted runs are simulated by saving a mid-run `TeamState` with `save_task_state`. `shipped_registry_is_valid_and_ready` keeps `company/employees` valid. Prefer `ScriptedProvider` over `TestLlm` when asserting on prompt contents.

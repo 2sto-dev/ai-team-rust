@@ -1,0 +1,13 @@
+# MCP servers the company may use. Defined by the Owner; a contract only names them in
+# `mcp_servers`. Paths in `args`/`cwd` are relative to this company folder.
+#
+#   command / args   how to start the server (stdio transport)
+#   env              literal, non-secret variables
+#   env_from         variables copied from the platform's environment (how secrets reach a server)
+#   timeout_secs     per request (default 30)
+servers:
+  pydoc:
+    description: Python standard-library documentation (local, read-only)
+    command: python
+    args: ["mcp/pydoc_server.py"]
+    timeout_secs: 20

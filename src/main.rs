@@ -7,6 +7,7 @@ use std::{
 use ai_team::{
     audit::hr_audit_dir,
     config::{CLAUDE_DEFAULT_API_KEY_ENV, ModelConfig, ProviderKind, load_project},
+    domain::ProjectConfig,
     orchestrator::Orchestrator,
     project::{ProjectManager, ProjectStatus, Store},
     registry::{
@@ -44,6 +45,34 @@ enum Commands {
 
     /// Show the org chart.
     Team,
+
+    /// Interactive console: type requests, attach files, watch the team, decide on stopped tasks.
+    Console {
+        /// Continue an existing project instead of starting a new one.
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// Give the team a task in your own words, with optional files; the team starts at once.
+    Request {
+        /// What you want done.
+        prompt: String,
+        /// A file for the team (repeatable); copied to inputs/ in the project.
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
+        /// Add the request to an existing project instead of creating one.
+        #[arg(long)]
+        project: Option<String>,
+        /// Command that must pass, run in the workspace after every Builder answer.
+        #[arg(long)]
+        test_command: Option<String>,
+        /// Let the Planner split the request into tasks (shown for your approval).
+        #[arg(long)]
+        plan: bool,
+        /// Approve the plan without asking (with --plan).
+        #[arg(long)]
+        yes: bool,
+    },
 
     /// Projects: add, plan, approve, run, status.
     Project {
@@ -214,6 +243,26 @@ async fn main() -> Result<()> {
             task,
             json,
         } => run(&employees_dir, project, task, json).await,
+        Commands::Console { project } => owner_console(&employees_dir, &cli.data, project).await,
+        Commands::Request {
+            prompt,
+            files,
+            project,
+            test_command,
+            plan,
+            yes,
+        } => owner_request(
+            &employees_dir,
+            &cli.data,
+            prompt,
+            files,
+            project,
+            test_command,
+            plan,
+            yes,
+        )
+        .await
+        .map(|_| ()),
         Commands::Project { action } => projects(&employees_dir, &cli.data, action).await,
         Commands::Task { action } => tasks(&employees_dir, &cli.data, action).await,
         Commands::Hire { action } => hire(&cli.company, action),
@@ -280,6 +329,7 @@ async fn doctor(employees_dir: &Path, offline: bool) -> Result<()> {
 
     if !offline {
         problems += check_ollama_servers(&registry).await;
+        problems += check_mcp_servers(&registry).await;
     }
 
     if problems > 0 {
@@ -287,6 +337,44 @@ async fn doctor(employees_dir: &Path, offline: bool) -> Result<()> {
     }
     println!("AI Team doctor: OK");
     Ok(())
+}
+
+/// Starts every MCP server an active employee uses and lists its tools.
+async fn check_mcp_servers(registry: &Registry) -> usize {
+    let mut used: Vec<String> = registry
+        .employees()
+        .filter(|employee| employee.is_active())
+        .flat_map(|employee| employee.contract.mcp_servers.clone())
+        .collect();
+    used.sort();
+    used.dedup();
+
+    let mut problems = 0;
+    for name in used {
+        let Some(config) = registry.resources().mcp.servers.get(&name) else {
+            continue; // the registry already rejects unknown servers
+        };
+        let toolbox = ai_team::mcp::Toolbox::new(
+            vec![(name.clone(), config.clone())],
+            registry.company_dir().to_path_buf(),
+        );
+        match toolbox.specs().await {
+            Ok(tools) => println!(
+                "MCP {name}: {} tool(s): {}",
+                tools.len(),
+                tools
+                    .iter()
+                    .map(|tool| tool.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Err(err) => {
+                problems += 1;
+                println!("ERROR: MCP server {name}: {err:#}");
+            }
+        }
+    }
+    problems
 }
 
 /// For every Ollama server used by an active employee: reachable, model installed, and
@@ -413,14 +501,29 @@ fn print_reports(registry: &Registry, manager_id: &str, prefix: &str) {
             (_, Some(model)) => model.model.clone(),
             (_, None) => "-".to_string(),
         };
+        let mut extras = Vec::new();
+        if !contract.skill_packs.is_empty() {
+            extras.push(format!("skills: {}", contract.skill_packs.join(", ")));
+        }
+        if !contract.mcp_servers.is_empty() {
+            extras.push(format!("mcp: {}", contract.mcp_servers.join(", ")));
+        }
+        if employee.has(registry::Capability::VetoReview) {
+            extras.push("VETO".to_string());
+        }
         println!(
-            "{prefix}{} {}  {} [{}]  {}  {}",
+            "{prefix}{} {}  {} [{}]  {}  {}{}",
             if last { "└─" } else { "├─" },
             employee.id(),
             contract.name,
             contract.function,
             model,
             contract.status,
+            if extras.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", extras.join("; "))
+            },
         );
         let child_prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
         print_reports(registry, employee.id(), &child_prefix);
@@ -531,7 +634,7 @@ const DEFAULT_RESUME_ITERATIONS: u32 = 2;
 async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) -> Result<()> {
     let store = Store::open(data_dir)?;
     let orchestrator = Orchestrator::from_registry(Registry::load(employees_dir)?)?;
-    let manager = ProjectManager::new(&store, &orchestrator);
+    let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
 
     match action {
         ProjectAction::Add { file } => {
@@ -809,4 +912,431 @@ async fn tasks(employees_dir: &Path, data_dir: &Path, action: TaskAction) -> Res
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Owner request: a prompt plus files, straight to the team
+// ---------------------------------------------------------------------------
+
+const PREVIEW_LINES: usize = 40;
+const PREVIEW_CHARS: usize = 3000;
+
+/// What every agent sees of the Owner's files: names, sizes and the start of text files.
+fn inputs_preview(files: &[PathBuf]) -> Result<String> {
+    let mut preview = String::new();
+    for file in files {
+        let bytes =
+            std::fs::read(file).with_context(|| format!("cannot read {}", file.display()))?;
+        let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+        preview.push_str(&format!("\n--- inputs/{name} ({} bytes)", bytes.len()));
+        match String::from_utf8(bytes) {
+            Ok(text) => {
+                let head: String = text
+                    .lines()
+                    .take(PREVIEW_LINES)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .chars()
+                    .take(PREVIEW_CHARS)
+                    .collect();
+                let cut = head.len() < text.trim_end().len();
+                preview.push_str(&format!(
+                    ":\n{head}{}\n",
+                    if cut {
+                        "\n[... rest of the file is in the workspace ...]"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            Err(_) => preview.push_str(": binary file\n"),
+        }
+    }
+    Ok(preview)
+}
+
+fn project_id_from(prompt: &str) -> String {
+    let words: Vec<String> = prompt
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| word.len() > 1)
+        .take(4)
+        .map(str::to_lowercase)
+        .collect();
+    let stem: String = words.join("-").chars().take(30).collect();
+    let suffix = &uuid::Uuid::new_v4().simple().to_string()[..4];
+    if stem.is_empty() {
+        format!("request-{suffix}")
+    } else {
+        format!("{stem}-{suffix}")
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn owner_request(
+    employees_dir: &Path,
+    data_dir: &Path,
+    prompt: String,
+    files: Vec<PathBuf>,
+    project_id: Option<String>,
+    test_command: Option<String>,
+    plan: bool,
+    yes: bool,
+) -> Result<String> {
+    anyhow::ensure!(!prompt.trim().is_empty(), "the prompt is empty");
+    for file in &files {
+        anyhow::ensure!(file.is_file(), "not a file: {}", file.display());
+    }
+    let store = Store::open(data_dir)?;
+    let orchestrator = Orchestrator::from_registry(Registry::load(employees_dir)?)?;
+    let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
+    let preview = inputs_preview(&files)?;
+
+    let project_id = match project_id {
+        Some(id) => {
+            store.project(&id)?;
+            anyhow::ensure!(!plan, "--plan only works for a new project");
+            if test_command.is_some() {
+                manager.configure(&id, test_command, None, None)?;
+            }
+            id
+        }
+        None => {
+            let id = project_id_from(&prompt);
+            let mut objective = prompt.trim().to_string();
+            if !preview.is_empty() {
+                objective.push_str(&format!(
+                    "\n\nFILES PROVIDED BY THE OWNER (copied to inputs/ in the workspace):{preview}"
+                ));
+            }
+            let config = ProjectConfig {
+                project_id: id.clone(),
+                name: prompt
+                    .lines()
+                    .next()
+                    .unwrap_or("Owner request")
+                    .chars()
+                    .take(60)
+                    .collect(),
+                objective,
+                max_iterations: 3,
+                max_architecture_revisions: 1,
+                rules: vec![
+                    "Work from the Owner's request and the provided files only.".to_string(),
+                    "Do not claim tests passed: the platform runs them.".to_string(),
+                ],
+                acceptance_criteria: vec!["The Owner's request is fully satisfied.".to_string()],
+                assigned_team: None,
+                test_command: test_command.filter(|command| !command.trim().is_empty()),
+                test_timeout_secs: 300,
+                remote_url: None,
+            };
+            store.add_project(&config)?;
+            println!("Project {id} created.");
+            id
+        }
+    };
+
+    let inputs = manager.add_inputs(&project_id, &files)?;
+    if !inputs.is_empty() {
+        println!("Files committed to the project: {}", inputs.join(", "));
+    }
+
+    if plan {
+        let proposed = manager.plan(&project_id, Some(prompt.trim())).await?;
+        println!("\nProposed plan:");
+        for (index, milestone) in proposed.milestones.iter().enumerate() {
+            println!("Milestone {}: {}", index + 1, milestone.name);
+            for task in &milestone.tasks {
+                println!("  {} {}", task.key, task.title);
+            }
+        }
+        if !yes {
+            print!("\nApprove this plan and start the team? [y/N] ");
+            use std::io::Write as _;
+            std::io::stdout().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            if !answer.trim().eq_ignore_ascii_case("y") {
+                println!("Not approved. Approve later with: ai-team project approve {project_id}");
+                return Ok(project_id);
+            }
+        }
+        manager.approve(&project_id, Some("approved with the request"))?;
+    } else {
+        // An existing project gets the file preview in the task itself.
+        let request = if inputs.is_empty()
+            || store
+                .project(&project_id)?
+                .config
+                .objective
+                .contains(&preview)
+        {
+            prompt.clone()
+        } else {
+            format!("{}\n\nFILES PROVIDED BY THE OWNER:{preview}", prompt.trim())
+        };
+        let task = manager.add_request(&project_id, &request, &inputs)?;
+        println!("Task {} created: {}", task.id, task.title);
+    }
+
+    println!("The team is working...\n");
+    let summary = manager.run(&project_id, None).await?;
+    for (task_id, status) in &summary.executed {
+        let task = store.task(task_id)?;
+        println!("{task_id} [{status}] {}", task.title);
+        if let Some(state) = store.load_task_state(task_id)? {
+            if let Some(review) = &state.review {
+                println!(
+                    "  last review: {:?} - {}",
+                    review.decision,
+                    review
+                        .feedback
+                        .lines()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("")
+                );
+            }
+            if let Some(verification) = &state.verification
+                && let Some(test) = &verification.test
+            {
+                println!("  tests: {}", if test.passed { "passed" } else { "FAILED" });
+            }
+            if let Some(error) = &state.error {
+                println!("  error: {error}");
+            }
+        }
+    }
+    for error in &summary.push_errors {
+        println!("WARNING: {error}");
+    }
+
+    let repository = manager.main_workspace(&project_id);
+    let produced: Vec<String> = ai_team::workspace::Workspace::open(&repository)?
+        .files()?
+        .into_iter()
+        .filter(|file| file != ".gitignore" && !file.starts_with("inputs/"))
+        .collect();
+    println!("\nProject {project_id}: {}", summary.project_status);
+    println!("Result (branch main): {}", repository.display());
+    if !produced.is_empty() {
+        println!("Files produced: {}", produced.join(", "));
+    }
+    println!("Usage: {}", manager.project_usage(&project_id)?);
+    print_owner_actions(&store, &project_id)?;
+    Ok(project_id)
+}
+
+// ---------------------------------------------------------------------------
+// Owner console: type a request, attach files, watch the team, decide
+// ---------------------------------------------------------------------------
+
+const CONSOLE_HELP: &str = "\
+Scrie cererea (poate avea mai multe randuri); un rand gol o trimite.
+Comenzi:
+  /nou            urmatoarea cerere porneste un proiect nou
+  /proiect <id>   cererile urmatoare merg in proiectul <id>
+  /status         starea proiectului curent
+  /ajutor         acest mesaj
+  /iesire         inchide consola";
+
+fn read_line(prompt: &str) -> Result<Option<String>> {
+    use std::io::Write as _;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line)? == 0 {
+        return Ok(None); // end of input
+    }
+    Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
+}
+
+/// A path typed or dragged into the console (Windows wraps it in quotes).
+fn clean_path(raw: &str) -> PathBuf {
+    PathBuf::from(raw.trim().trim_matches('"').trim_matches('\'').trim())
+}
+
+async fn owner_console(
+    employees_dir: &Path,
+    data_dir: &Path,
+    project: Option<String>,
+) -> Result<()> {
+    let store = Store::open(data_dir)?;
+    let orchestrator = Orchestrator::from_registry(Registry::load(employees_dir)?)?;
+    let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
+    let mut current = match project {
+        Some(id) => {
+            store.project(&id)?;
+            Some(id)
+        }
+        None => None,
+    };
+
+    println!("AI Team - consola Owner-ului\n{CONSOLE_HELP}");
+    loop {
+        println!(
+            "\n=== {} ===",
+            current
+                .as_deref()
+                .map(|id| format!("proiect {id}"))
+                .unwrap_or_else(|| "proiect nou".to_string())
+        );
+
+        // The request (several lines until an empty one) or a command.
+        let mut lines: Vec<String> = Vec::new();
+        loop {
+            let Some(line) = read_line(if lines.is_empty() { "> " } else { "  " })? else {
+                return Ok(());
+            };
+            if lines.is_empty() && line.trim().starts_with('/') {
+                lines.push(line);
+                break;
+            }
+            if line.trim().is_empty() {
+                if lines.is_empty() {
+                    continue;
+                }
+                break;
+            }
+            lines.push(line);
+        }
+        let first = lines[0].trim().to_string();
+        if let Some(command) = first.strip_prefix('/') {
+            let mut parts = command.split_whitespace();
+            match (parts.next().unwrap_or(""), parts.next()) {
+                ("iesire" | "exit" | "quit", _) => return Ok(()),
+                ("ajutor" | "help", _) => println!("{CONSOLE_HELP}"),
+                ("nou" | "new", _) => {
+                    current = None;
+                    println!("Urmatoarea cerere porneste un proiect nou.");
+                }
+                ("proiect" | "project", Some(id)) => match store.project(id) {
+                    Ok(_) => current = Some(id.to_string()),
+                    Err(err) => println!("{err:#}"),
+                },
+                ("status", _) => match &current {
+                    Some(id) => {
+                        let project_id = id.clone();
+                        if let Err(err) = projects(
+                            employees_dir,
+                            data_dir,
+                            ProjectAction::Status { project_id },
+                        )
+                        .await
+                        {
+                            println!("{err:#}");
+                        }
+                    }
+                    None => println!("Niciun proiect curent."),
+                },
+                _ => println!("Comanda necunoscuta. /ajutor pentru lista."),
+            }
+            continue;
+        }
+        let prompt = lines.join("\n");
+
+        // Files: paths typed or dragged into the console, one per line.
+        let mut files = Vec::new();
+        println!("Fisiere pentru echipa (cale sau trage fisierul aici; Enter gol = gata):");
+        loop {
+            let Some(line) = read_line("  fisier> ")? else {
+                return Ok(());
+            };
+            if line.trim().is_empty() {
+                break;
+            }
+            let path = clean_path(&line);
+            if path.is_file() {
+                println!("  + {}", path.display());
+                files.push(path);
+            } else {
+                println!("  nu exista fisierul: {}", path.display());
+            }
+        }
+
+        let test_command = if current.is_none() {
+            read_line("Comanda de test (Enter = fara teste): ")?
+                .filter(|command| !command.trim().is_empty())
+        } else {
+            None
+        };
+
+        let answer = read_line("Pornesc echipa? [D/n] ")?.unwrap_or_default();
+        if answer.trim().eq_ignore_ascii_case("n") {
+            println!("Anulat.");
+            continue;
+        }
+
+        match owner_request(
+            employees_dir,
+            data_dir,
+            prompt,
+            files,
+            current.clone(),
+            test_command,
+            false,
+            true,
+        )
+        .await
+        {
+            Ok(project_id) => current = Some(project_id),
+            Err(err) => {
+                println!("Eroare: {err:#}");
+                continue;
+            }
+        }
+
+        // Stopped tasks wait for the Owner: decide right here.
+        let project_id = current.clone().expect("set above");
+        loop {
+            let waiting: Vec<_> = store
+                .tasks(&project_id)?
+                .into_iter()
+                .filter(|task| task.status.needs_owner())
+                .collect();
+            let Some(task) = waiting.first() else {
+                break;
+            };
+            println!("\n{} s-a oprit [{}]: {}", task.id, task.status, task.title);
+            if let Some(state) = store.load_task_state(&task.id)?
+                && let Some(review) = &state.review
+            {
+                let summary: String = review
+                    .feedback
+                    .lines()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .join("\n  ");
+                println!("  ultimul feedback:\n  {summary}");
+            }
+            let choice =
+                read_line("  [r] reia cu o nota  [a] accepta  [c] anuleaza  [Enter] lasa asa: ")?
+                    .unwrap_or_default();
+            match choice.trim().to_lowercase().as_str() {
+                "r" => {
+                    let note = read_line("  nota pentru echipa: ")?.unwrap_or_default();
+                    let note = (!note.trim().is_empty()).then_some(note);
+                    match manager.resume_task(&task.id, note.as_deref(), DEFAULT_RESUME_ITERATIONS)
+                    {
+                        Ok(_) => {
+                            println!("Echipa reia lucrul...");
+                            let summary = manager.run(&project_id, None).await?;
+                            for (task_id, status) in &summary.executed {
+                                println!("{task_id}: {status}");
+                            }
+                        }
+                        Err(err) => println!("  {err:#}"),
+                    }
+                }
+                "a" => match manager.accept_task(&task.id, Some("accepted from the console")) {
+                    Ok(task) => println!("  {} acceptat: {}", task.id, task.status),
+                    Err(err) => println!("  {err:#}"),
+                },
+                "c" => match manager.cancel_task(&task.id, Some("cancelled from the console")) {
+                    Ok(task) => println!("  {} anulat", task.id),
+                    Err(err) => println!("  {err:#}"),
+                },
+                _ => break,
+            }
+        }
+    }
 }

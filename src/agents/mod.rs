@@ -1,7 +1,10 @@
 pub mod architect;
 pub mod builder;
+pub mod lead;
 pub(crate) mod prompt;
 pub mod reviewer;
+pub mod specialist;
+pub mod tooling;
 
 use anyhow::Result;
 use serde::Serialize;

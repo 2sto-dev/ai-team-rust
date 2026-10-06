@@ -31,10 +31,72 @@ pub struct Completion {
     pub usage: Option<Usage>,
 }
 
+/// A tool the model may call (from an MCP server), described with a JSON Schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+/// A tool call requested by the model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+/// One message of a multi-turn exchange (the system prompt travels separately).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatMessage {
+    User(String),
+    Assistant {
+        text: String,
+        tool_calls: Vec<ToolCall>,
+    },
+    Tool {
+        call_id: String,
+        name: String,
+        content: String,
+    },
+}
+
+/// One model turn: text and/or tool calls.
+#[derive(Debug, Clone)]
+pub struct ChatTurn {
+    pub text: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub usage: Option<Usage>,
+}
+
 /// A chat-completion backend. Agents depend on this trait, so tests and future
 /// providers can be swapped in without touching agent code.
 pub trait LlmProvider: Send + Sync {
     fn model_name(&self) -> &str;
+
+    /// Multi-turn exchange with optional tools. Providers without tool support only handle
+    /// a single user message and no tools.
+    fn chat<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        messages: &'a [ChatMessage],
+        tools: &'a [ToolSpec],
+    ) -> BoxFuture<'a, Result<ChatTurn>> {
+        Box::pin(async move {
+            match (messages, tools.is_empty()) {
+                ([ChatMessage::User(prompt)], true) => {
+                    let completion = self.generate(system_prompt, prompt).await?;
+                    Ok(ChatTurn {
+                        text: completion.text,
+                        tool_calls: Vec::new(),
+                        usage: completion.usage,
+                    })
+                }
+                _ => bail!("{} does not support tool calling", self.model_name()),
+            }
+        })
+    }
 
     fn generate<'a>(
         &'a self,
@@ -191,6 +253,19 @@ impl LlmProvider for MeteredProvider {
         self.inner.model_name()
     }
 
+    fn chat<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        messages: &'a [ChatMessage],
+        tools: &'a [ToolSpec],
+    ) -> BoxFuture<'a, Result<ChatTurn>> {
+        Box::pin(async move {
+            let turn = self.inner.chat(system_prompt, messages, tools).await?;
+            self.record(turn.usage);
+            Ok(turn)
+        })
+    }
+
     fn generate<'a>(
         &'a self,
         system_prompt: &'a str,
@@ -198,6 +273,19 @@ impl LlmProvider for MeteredProvider {
     ) -> BoxFuture<'a, Result<Completion>> {
         Box::pin(async move {
             let completion = self.inner.generate(system_prompt, user_prompt).await?;
+            self.record(completion.usage);
+            Ok(completion)
+        })
+    }
+}
+
+impl MeteredProvider {
+    fn record(&self, usage: Option<Usage>) {
+        {
+            let completion = Completion {
+                text: String::new(),
+                usage,
+            };
             let cost_usd = match (completion.usage, self.prices) {
                 (Some(usage), (input, output)) if input.is_some() || output.is_some() => Some(
                     usage.input_tokens as f64 / 1e6 * input.unwrap_or_default()
@@ -211,8 +299,7 @@ impl LlmProvider for MeteredProvider {
                 usage: completion.usage,
                 cost_usd,
             });
-            Ok(completion)
-        })
+        }
     }
 }
 
@@ -312,23 +399,80 @@ impl HttpChatProvider {
         })
     }
 
-    fn request_body(&self, system_prompt: &str, user_prompt: &str) -> Value {
+    fn request_body(
+        &self,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> Value {
         match self.dialect {
             Dialect::OpenAi => {
+                let mut wire = vec![json!({ "role": "system", "content": system_prompt })];
+                for message in messages {
+                    wire.push(match message {
+                        ChatMessage::User(text) => json!({ "role": "user", "content": text }),
+                        ChatMessage::Assistant { text, tool_calls } if tool_calls.is_empty() => {
+                            json!({ "role": "assistant", "content": text })
+                        }
+                        ChatMessage::Assistant { text, tool_calls } => json!({
+                            "role": "assistant",
+                            "content": text,
+                            "tool_calls": tool_calls.iter().map(|call| json!({
+                                "id": call.id,
+                                "type": "function",
+                                "function": { "name": call.name, "arguments": call.arguments.to_string() },
+                            })).collect::<Vec<_>>(),
+                        }),
+                        ChatMessage::Tool { call_id, content, .. } => {
+                            json!({ "role": "tool", "tool_call_id": call_id, "content": content })
+                        }
+                    });
+                }
                 let mut body = json!({
                     "model": self.model,
-                    "messages": [
-                        { "role": "system", "content": system_prompt },
-                        { "role": "user", "content": user_prompt },
-                    ],
+                    "messages": wire,
                     "temperature": self.temperature,
                 });
+                if !tools.is_empty() {
+                    body["tools"] = json!(
+                        tools
+                            .iter()
+                            .map(|tool| json!({
+                                "type": "function",
+                                "function": {
+                                    "name": tool.name,
+                                    "description": tool.description,
+                                    "parameters": tool.parameters,
+                                },
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                }
                 if let Some(max_tokens) = self.max_tokens {
                     body["max_tokens"] = json!(max_tokens);
                 }
                 body
             }
             Dialect::Ollama => {
+                let mut wire = vec![json!({ "role": "system", "content": system_prompt })];
+                for message in messages {
+                    wire.push(match message {
+                        ChatMessage::User(text) => json!({ "role": "user", "content": text }),
+                        ChatMessage::Assistant { text, tool_calls } if tool_calls.is_empty() => {
+                            json!({ "role": "assistant", "content": text })
+                        }
+                        ChatMessage::Assistant { text, tool_calls } => json!({
+                            "role": "assistant",
+                            "content": text,
+                            "tool_calls": tool_calls.iter().map(|call| json!({
+                                "function": { "name": call.name, "arguments": call.arguments },
+                            })).collect::<Vec<_>>(),
+                        }),
+                        ChatMessage::Tool { name, content, .. } => {
+                            json!({ "role": "tool", "tool_name": name, "content": content })
+                        }
+                    });
+                }
                 let mut options = json!({ "temperature": self.temperature });
                 if let Some(num_ctx) = self.num_ctx {
                     options["num_ctx"] = json!(num_ctx);
@@ -336,24 +480,96 @@ impl HttpChatProvider {
                 if let Some(num_predict) = self.num_predict {
                     options["num_predict"] = json!(num_predict);
                 }
-                json!({
+                let mut body = json!({
                     "model": self.model,
-                    "messages": [
-                        { "role": "system", "content": system_prompt },
-                        { "role": "user", "content": user_prompt },
-                    ],
+                    "messages": wire,
                     "stream": false,
                     "options": options,
-                })
+                });
+                if !tools.is_empty() {
+                    body["tools"] = json!(
+                        tools
+                            .iter()
+                            .map(|tool| json!({
+                                "type": "function",
+                                "function": {
+                                    "name": tool.name,
+                                    "description": tool.description,
+                                    "parameters": tool.parameters,
+                                },
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                body
             }
             Dialect::Claude => {
+                // Consecutive tool results travel together in one user message.
+                let mut wire: Vec<Value> = Vec::new();
+                for message in messages {
+                    match message {
+                        ChatMessage::User(text) => {
+                            wire.push(json!({ "role": "user", "content": text }));
+                        }
+                        ChatMessage::Assistant { text, tool_calls } => {
+                            let mut blocks = Vec::new();
+                            if !text.is_empty() {
+                                blocks.push(json!({ "type": "text", "text": text }));
+                            }
+                            for call in tool_calls {
+                                blocks.push(json!({
+                                    "type": "tool_use",
+                                    "id": call.id,
+                                    "name": call.name,
+                                    "input": call.arguments,
+                                }));
+                            }
+                            wire.push(json!({ "role": "assistant", "content": blocks }));
+                        }
+                        ChatMessage::Tool {
+                            call_id, content, ..
+                        } => {
+                            let block = json!({
+                                "type": "tool_result",
+                                "tool_use_id": call_id,
+                                "content": content,
+                            });
+                            match wire.last_mut() {
+                                Some(last)
+                                    if last["role"] == "user"
+                                        && last["content"].as_array().is_some_and(|blocks| {
+                                            blocks.iter().all(|b| b["type"] == "tool_result")
+                                        }) =>
+                                {
+                                    last["content"]
+                                        .as_array_mut()
+                                        .expect("checked above")
+                                        .push(block);
+                                }
+                                _ => wire.push(json!({ "role": "user", "content": [block] })),
+                            }
+                        }
+                    }
+                }
                 // No temperature: current Claude models reject sampling parameters.
                 let mut body = json!({
                     "model": self.model,
                     "max_tokens": self.max_tokens.unwrap_or(CLAUDE_DEFAULT_MAX_TOKENS),
                     "system": system_prompt,
-                    "messages": [{ "role": "user", "content": user_prompt }],
+                    "messages": wire,
                 });
+                if !tools.is_empty() {
+                    body["tools"] = json!(
+                        tools
+                            .iter()
+                            .map(|tool| json!({
+                                "name": tool.name,
+                                "description": tool.description,
+                                "input_schema": tool.parameters,
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                }
                 if let Some(effort) = &self.effort {
                     body["output_config"] = json!({ "effort": effort });
                 }
@@ -366,7 +582,7 @@ impl HttpChatProvider {
         &self,
         body: &Value,
         api_key: Option<&str>,
-    ) -> Result<Completion, AttemptError> {
+    ) -> Result<ChatTurn, AttemptError> {
         let mut request = self.http.post(&self.endpoint).json(body);
         match (self.dialect, api_key) {
             (Dialect::Claude, Some(api_key)) => {
@@ -400,7 +616,7 @@ impl HttpChatProvider {
 
         // A cut-off answer is an error in every dialect: a half-written specification or
         // implementation must not reach review, where a weak model may approve it.
-        let content = match self.dialect {
+        let (content, tool_calls) = match self.dialect {
             Dialect::OpenAi => {
                 if parsed["choices"][0]["finish_reason"] == "length" {
                     return Err(AttemptError::fatal(anyhow!(
@@ -408,9 +624,27 @@ impl HttpChatProvider {
                         limit_note(self.max_tokens)
                     )));
                 }
-                parsed["choices"][0]["message"]["content"]
-                    .as_str()
-                    .map(str::to_string)
+                let message = &parsed["choices"][0]["message"];
+                let calls: Vec<ToolCall> = message["tool_calls"]
+                    .as_array()
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .enumerate()
+                            .map(|(index, call)| ToolCall {
+                                id: call["id"]
+                                    .as_str()
+                                    .map_or_else(|| format!("call_{index}"), str::to_string),
+                                name: call["function"]["name"].as_str().unwrap_or("").to_string(),
+                                arguments: call["function"]["arguments"]
+                                    .as_str()
+                                    .and_then(|raw| serde_json::from_str(raw).ok())
+                                    .unwrap_or_else(|| json!({})),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (message["content"].as_str().map(str::to_string), calls)
             }
             Dialect::Ollama => {
                 if parsed["done_reason"] == "length" {
@@ -419,19 +653,62 @@ impl HttpChatProvider {
                         limit_note(self.num_predict)
                     )));
                 }
-                parsed["message"]["content"].as_str().map(str::to_string)
+                let message = &parsed["message"];
+                let calls: Vec<ToolCall> = message["tool_calls"]
+                    .as_array()
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .enumerate()
+                            .map(|(index, call)| ToolCall {
+                                id: call["id"]
+                                    .as_str()
+                                    .map_or_else(|| format!("call_{index}"), str::to_string),
+                                name: call["function"]["name"].as_str().unwrap_or("").to_string(),
+                                arguments: match &call["function"]["arguments"] {
+                                    Value::String(raw) => {
+                                        serde_json::from_str(raw).unwrap_or_else(|_| json!({}))
+                                    }
+                                    Value::Null => json!({}),
+                                    other => other.clone(),
+                                },
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (message["content"].as_str().map(str::to_string), calls)
             }
-            Dialect::Claude => claude_text(&parsed)?,
+            Dialect::Claude => {
+                let text = claude_text(&parsed)?;
+                let calls: Vec<ToolCall> = parsed["content"]
+                    .as_array()
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|block| block["type"] == "tool_use")
+                            .map(|block| ToolCall {
+                                id: block["id"].as_str().unwrap_or("").to_string(),
+                                name: block["name"].as_str().unwrap_or("").to_string(),
+                                arguments: block["input"].clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (text, calls)
+            }
         };
 
         let text = content
             .map(|content| strip_reasoning(&content))
-            .filter(|content| !content.is_empty())
-            .ok_or_else(|| {
-                AttemptError::fatal(anyhow!("LLM response did not contain message content"))
-            })?;
-        Ok(Completion {
+            .unwrap_or_default();
+        if text.is_empty() && tool_calls.is_empty() {
+            return Err(AttemptError::fatal(anyhow!(
+                "LLM response did not contain message content"
+            )));
+        }
+        Ok(ChatTurn {
             text,
+            tool_calls,
             usage: self.usage_of(&parsed),
         })
     }
@@ -520,6 +797,22 @@ impl LlmProvider for HttpChatProvider {
         user_prompt: &'a str,
     ) -> BoxFuture<'a, Result<Completion>> {
         Box::pin(async move {
+            let messages = [ChatMessage::User(user_prompt.to_string())];
+            let turn = self.chat(system_prompt, &messages, &[]).await?;
+            Ok(Completion {
+                text: turn.text,
+                usage: turn.usage,
+            })
+        })
+    }
+
+    fn chat<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        messages: &'a [ChatMessage],
+        tools: &'a [ToolSpec],
+    ) -> BoxFuture<'a, Result<ChatTurn>> {
+        Box::pin(async move {
             let api_key = match &self.api_key_env {
                 Some(env_name) => Some(std::env::var(env_name).with_context(|| {
                     format!("missing API key environment variable: {env_name}")
@@ -527,7 +820,7 @@ impl LlmProvider for HttpChatProvider {
                 None => None,
             };
 
-            let body = self.request_body(system_prompt, user_prompt);
+            let body = self.request_body(system_prompt, messages, tools);
 
             let mut attempt: u32 = 0;
             loop {

@@ -37,6 +37,8 @@ pub struct RunSummary {
 pub struct ProjectManager<'a> {
     store: &'a Store,
     orchestrator: &'a Orchestrator,
+    /// Print each step of a running task (for an Owner watching the console).
+    progress: bool,
 }
 
 impl<'a> ProjectManager<'a> {
@@ -44,7 +46,13 @@ impl<'a> ProjectManager<'a> {
         Self {
             store,
             orchestrator,
+            progress: false,
         }
+    }
+
+    pub fn with_progress(mut self, progress: bool) -> Self {
+        self.progress = progress;
+        self
     }
 
     pub fn store(&self) -> &Store {
@@ -115,6 +123,59 @@ impl<'a> ProjectManager<'a> {
             )),
         )?;
         Ok(config)
+    }
+
+    /// Copies the Owner's files into the project repository (`inputs/` on main).
+    pub fn add_inputs(&self, project_id: &str, files: &[PathBuf]) -> Result<Vec<String>> {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+        let project = self.store.project(project_id)?.config;
+        let paths = self.repository(&project)?.add_owner_inputs(files)?;
+        self.store
+            .add_owner_decision(project_id, None, "inputs", Some(&paths.join(", ")))?;
+        Ok(paths)
+    }
+
+    /// Turns an Owner prompt into a task of the project; it runs on the next `run`.
+    pub fn add_request(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        inputs: &[String],
+    ) -> Result<TaskRecord> {
+        let project = self.store.project(project_id)?.config;
+        let title: String = prompt
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("Owner request")
+            .chars()
+            .take(100)
+            .collect();
+        let mut description = prompt.trim().to_string();
+        if !inputs.is_empty() {
+            description.push_str(&format!(
+                "\n\nFiles provided by the Owner (in the workspace): {}",
+                inputs.join(", ")
+            ));
+        }
+        let mut acceptance = vec![
+            "The result does exactly what the Owner asked, completely and correctly.".to_string(),
+        ];
+        if let Some(command) = &project.test_command {
+            acceptance.push(format!("`{command}` passes."));
+        }
+        let id = self.store.add_owner_task(
+            project_id,
+            "Owner requests",
+            title.trim(),
+            &description,
+            &acceptance,
+            project.max_iterations,
+        )?;
+        self.store
+            .add_owner_decision(project_id, Some(&id), "request", Some(prompt.trim()))?;
+        self.store.task(&id)
     }
 
     /// Planning usage plus every task's usage.
@@ -314,22 +375,44 @@ impl<'a> ProjectManager<'a> {
         config.acceptance_criteria = task.acceptance_criteria.clone();
 
         let workspace = self.repository(project)?;
-        workspace.start_task(&task.id)?;
+        let conflicts = workspace.start_task(&task.id)?;
         let workbench = TaskWorkbench::new(
             workspace.clone(),
             task.id.clone(),
             project.test_command.clone(),
             Duration::from_secs(project.test_timeout_secs),
-        );
+        )
+        .with_conflicts(conflicts.clone());
 
         let store = self.store;
         let task_id = task.id.as_str();
-        let checkpoint =
-            |state: &TeamState| store.save_task_state(task_id, status_for(&state.stage), state);
+        let saved = self.store.load_task_state(&task.id)?;
+        let progress = self.progress;
+        let printed = std::sync::atomic::AtomicUsize::new(
+            saved.as_ref().map_or(0, |state| state.history.len()),
+        );
+        let show_new_steps = |state: &TeamState| {
+            if progress {
+                let from = printed.swap(state.history.len(), std::sync::atomic::Ordering::SeqCst);
+                for line in state.history.iter().skip(from) {
+                    println!("  [{task_id}] {line}");
+                }
+            }
+        };
+        let checkpoint = |state: &TeamState| {
+            show_new_steps(state);
+            store.save_task_state(task_id, status_for(&state.stage), state)
+        };
 
-        let mut result = match self.store.load_task_state(&task.id)? {
+        let mut result = match saved {
             Some(mut state) => {
                 state.task = task_text;
+                if !conflicts.is_empty() {
+                    state.history.push(format!(
+                        "platform: merged main into the task branch; conflicts for the Builder: {}",
+                        conflicts.join(", ")
+                    ));
+                }
                 self.orchestrator
                     .resume(&config, state, &checkpoint, Some(&workbench))
                     .await
@@ -391,6 +474,7 @@ impl<'a> ProjectManager<'a> {
         for error in &push_errors {
             result.state.history.push(format!("platform: {error}"));
         }
+        show_new_steps(&result.state);
         self.store
             .save_task_state(&task.id, status, &result.state)?;
         if !result.state.run_id.is_empty() {

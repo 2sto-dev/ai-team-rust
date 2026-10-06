@@ -68,7 +68,7 @@ impl Orchestrator {
         let planner = match registry.active(EmployeeFunction::Planner).first() {
             Some(employee) => Some(Planner::new(
                 employee.id(),
-                employee.job_description.clone(),
+                registry.system_prompt(employee),
                 providers(Role::Planner, model_of(employee)?)?,
             )),
             None => None,

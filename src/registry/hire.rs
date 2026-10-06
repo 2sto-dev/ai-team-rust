@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::{
     CONTRACT_FILE, Employee, EmployeeFunction, EmployeeStatus, EmployeeType, JOB_DESCRIPTION_FILE,
-    OWNER, Registry, load_dir, load_employee, validate,
+    OWNER, Registry, load_dir, load_employee, load_resources, validate,
 };
 use crate::{agents::new_span_id, audit::AuditTrail};
 
@@ -106,6 +106,9 @@ pub fn propose_hire(company: &Path, request: &HireRequest) -> Result<PathBuf> {
          status: active\n\
          model:\n{model}\
          skills:\n  - {PLACEHOLDER}\n\
+         # Skill packs from company/skills/<id>/ and MCP servers from company/mcp.yaml:\n\
+         skill_packs: []\n\
+         mcp_servers: []\n\
          permissions:\n{permissions}\
          forbidden_actions: []\n",
         id = request.employee_id,
@@ -177,7 +180,7 @@ pub fn check_proposal(company: &Path, employee_id: &str) -> Result<Employee> {
     candidate.dir = employees_dir(company).join(employee_id);
     employees.insert(employee_id.to_string(), candidate.clone());
 
-    let errors = validate(&employees);
+    let errors = validate(&employees, &load_resources(company)?);
     if !errors.is_empty() {
         bail!(
             "proposal {employee_id} would make the registry invalid:\n- {}",

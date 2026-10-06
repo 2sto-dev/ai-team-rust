@@ -1,0 +1,31 @@
+# Operational contract for EMP-QA-001 (created with `ai-team hire propose`)
+employee_id: EMP-QA-001
+name: "Testing Engineer"
+title: "Testing Engineer"
+department: "engineering"
+manager_id: EMP-BUILD-001
+employee_type: subagent
+function: specialist
+status: active
+model:
+  provider: ollama
+  model: qwen3-coder:30b
+  base_url: http://10.10.0.14:11434
+  temperature: 0.1
+  num_ctx: 32768
+  num_predict: 8192
+  timeout_secs: 180
+  max_retries: 2
+  retry_backoff_ms: 1000
+skills:
+  - unit testing
+  - edge cases
+  - unittest
+# Skill packs from company/skills/<id>/ and MCP servers from company/mcp.yaml:
+skill_packs:
+  - python-unittest
+mcp_servers:
+  - pydoc
+permissions:
+  - write_implementation
+forbidden_actions: []

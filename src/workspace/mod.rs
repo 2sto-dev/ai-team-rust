@@ -17,6 +17,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+pub(crate) use runner::allowed_env;
 pub use runner::{TestRun, run_tests};
 
 /// Most files one Builder answer may write or delete.
@@ -45,6 +46,10 @@ const WINDOWS_RESERVED: [&str; 22] = [
 ];
 /// Identity for commits made by the platform itself (initial commit, merges, recovery).
 pub const PLATFORM_AUTHOR: &str = "EMP-ORCH-001";
+/// Identity for files the Owner hands to the team.
+pub const OWNER_AUTHOR: &str = "OWNER";
+/// Largest file the Owner can attach to a request.
+pub const MAX_INPUT_BYTES: u64 = 10 * 1024 * 1024;
 
 /// A file the Builder asked to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,16 +344,101 @@ impl Workspace {
         Ok(())
     }
 
-    /// Checks out the task's branch, creating it from `main` the first time.
-    pub fn start_task(&self, task_id: &str) -> Result<()> {
+    /// Checks out the task's branch, creating it from `main` the first time. An existing
+    /// branch is brought up to date with `main` first, so a resumed task works on the current
+    /// project; returns the files left with conflict markers for the Builder to resolve.
+    pub fn start_task(&self, task_id: &str) -> Result<Vec<String>> {
         self.save_uncommitted()?;
         let branch = task_branch(task_id);
         if self.branch_exists(&branch)? {
             self.git(&["checkout", "--quiet", &branch])?;
+            self.sync_with_main(&branch)
         } else {
             self.git(&["checkout", "--quiet", "-b", &branch, MAIN_BRANCH])?;
+            Ok(Vec::new())
         }
-        Ok(())
+    }
+
+    /// Merges `main` into the checked-out task branch. Conflicts are committed with their
+    /// markers (on the task branch only): resolving them becomes part of the task, and the
+    /// tests and the Reviewer check the resolution before anything reaches `main`.
+    fn sync_with_main(&self, branch: &str) -> Result<Vec<String>> {
+        let mut args: Vec<String> = Self::author_args(PLATFORM_AUTHOR).to_vec();
+        args.extend(
+            [
+                "merge",
+                "--no-ff",
+                "--quiet",
+                "-m",
+                &format!("Merge main into {branch}"),
+                MAIN_BRANCH,
+            ]
+            .map(String::from),
+        );
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.run(&args)?;
+        if output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let conflicts: Vec<String> = self
+            .git(&["diff", "--name-only", "--diff-filter=U"])?
+            .lines()
+            .map(str::to_string)
+            .collect();
+        if conflicts.is_empty() {
+            let _ = self.run(&["merge", "--abort"]);
+            bail!(
+                "cannot bring {branch} up to date with main: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        self.git(&["add", "--all"])?;
+        let mut args: Vec<String> = Self::author_args(PLATFORM_AUTHOR).to_vec();
+        args.extend(
+            [
+                "commit",
+                "--quiet",
+                "-m",
+                &format!(
+                    "Merge main into {branch} (conflicts left for the Builder: {})",
+                    conflicts.join(", ")
+                ),
+            ]
+            .map(String::from),
+        );
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.git(&args)?;
+        Ok(conflicts)
+    }
+
+    /// Copies the Owner's files into `inputs/` on `main` and commits them as the Owner.
+    /// Returns the workspace paths.
+    pub fn add_owner_inputs(&self, files: &[PathBuf]) -> Result<Vec<String>> {
+        self.checkout_main()?;
+        let mut paths = Vec::new();
+        for file in files {
+            let name = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .with_context(|| format!("not a file name: {}", file.display()))?;
+            let relative = validate_path(&format!("inputs/{name}"))
+                .with_context(|| format!("unusable file name {name}"))?;
+            let size = fs::metadata(file)
+                .with_context(|| format!("cannot read {}", file.display()))?
+                .len();
+            anyhow::ensure!(
+                size <= MAX_INPUT_BYTES,
+                "{} is {size} bytes; the maximum for an input file is {MAX_INPUT_BYTES}",
+                file.display()
+            );
+            let target = self.root.join(&relative);
+            fs::create_dir_all(target.parent().expect("inputs/ has a parent"))?;
+            fs::copy(file, &target).with_context(|| format!("cannot copy {}", file.display()))?;
+            paths.push(relative);
+        }
+        self.commit_paths(&paths, OWNER_AUTHOR, "Owner inputs")?;
+        Ok(paths)
     }
 
     pub fn checkout_main(&self) -> Result<()> {
@@ -707,6 +797,81 @@ mod tests {
                 .is_empty(),
             "clean"
         );
+    }
+
+    #[test]
+    fn resumed_task_is_synced_with_main_and_gets_conflicts_to_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+
+        workspace.start_task("p-T01").unwrap();
+        let (w, _) = workspace
+            .write_files(&[block(
+                "shared.txt",
+                "T01
+",
+            )])
+            .unwrap();
+        workspace.commit_paths(&w, "EMP-BUILD-001", "T01").unwrap();
+
+        // Meanwhile another task changed the same file and was merged.
+        workspace.checkout_main().unwrap();
+        workspace.start_task("p-T02").unwrap();
+        let (w, _) = workspace
+            .write_files(&[
+                block(
+                    "shared.txt",
+                    "T02
+",
+                ),
+                block(
+                    "other.txt",
+                    "x
+",
+                ),
+            ])
+            .unwrap();
+        workspace.commit_paths(&w, "EMP-BUILD-001", "T02").unwrap();
+        workspace.merge_task("p-T02", "Merge p-T02").unwrap();
+
+        let conflicts = workspace.start_task("p-T01").unwrap();
+        assert_eq!(conflicts, ["shared.txt"]);
+        assert_eq!(workspace.current_branch().unwrap(), "task/p-T01");
+        let text = fs::read_to_string(dir.path().join("shared.txt")).unwrap();
+        assert!(text.contains("<<<<<<<") && text.contains("T01") && text.contains("T02"));
+        assert!(
+            dir.path().join("other.txt").is_file(),
+            "main's other work arrived"
+        );
+        assert!(
+            workspace
+                .git(&["status", "--porcelain"])
+                .unwrap()
+                .is_empty(),
+            "committed"
+        );
+
+        // The Builder resolves the file; the final merge into main is now clean.
+        let (w, _) = workspace
+            .write_files(&[block(
+                "shared.txt",
+                "T01+T02
+",
+            )])
+            .unwrap();
+        workspace
+            .commit_paths(&w, "EMP-BUILD-001", "resolve")
+            .unwrap();
+        workspace.merge_task("p-T01", "Merge p-T01").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("shared.txt")).unwrap(),
+            "T01+T02
+"
+        );
+
+        // An up-to-date branch syncs without conflicts.
+        workspace.start_task("p-T02").unwrap();
+        assert!(workspace.start_task("p-T02").unwrap().is_empty());
     }
 
     #[test]

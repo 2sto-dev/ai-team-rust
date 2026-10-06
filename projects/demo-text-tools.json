@@ -13,6 +13,6 @@
     "python -m unittest discover -s tests passes.",
     "Each function has at least two unit tests, including an edge case."
   ],
-  "test_command": "python -m unittest discover -s tests -t . -v",
+  "test_command": "python -m unittest discover -s tests -v",
   "test_timeout_secs": 120
 }

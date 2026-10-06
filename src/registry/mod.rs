@@ -13,7 +13,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::config::ModelConfig;
+use crate::{
+    config::ModelConfig,
+    mcp::{McpCatalog, Toolbox},
+};
 
 pub use hire::{HireRequest, approve_hire, check_proposal, propose_hire, set_status};
 
@@ -114,6 +117,8 @@ pub enum Capability {
     WriteWorkspace,
     /// The platform may run the project's test command on this employee's work.
     RunTests,
+    /// A reviewer's subagent whose rejection the Reviewer cannot overrule (security).
+    VetoReview,
 }
 
 impl Capability {
@@ -126,6 +131,7 @@ impl Capability {
             Capability::DelegateSubtasks => "delegate_subtasks",
             Capability::WriteWorkspace => "write_workspace",
             Capability::RunTests => "run_tests",
+            Capability::VetoReview => "veto_review",
         }
     }
 }
@@ -151,6 +157,12 @@ pub struct EmployeeContract {
     pub model: Option<ModelConfig>,
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Skill packs (`company/skills/<id>/SKILL.md`) appended to the system prompt.
+    #[serde(default)]
+    pub skill_packs: Vec<String>,
+    /// MCP servers (`company/mcp.yaml`) whose tools this employee may call.
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
     #[serde(default)]
     pub permissions: Vec<Capability>,
     /// Informative only: anything not listed in `permissions` is already forbidden.
@@ -180,18 +192,120 @@ impl Employee {
     }
 }
 
+/// A package of instructions in `company/skills/<id>/SKILL.md` (optional YAML front matter
+/// with `name` and `description`, then Markdown).
+#[derive(Debug, Clone)]
+pub struct SkillPack {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub body: String,
+}
+
+/// Company-wide resources contracts refer to.
+#[derive(Debug, Clone, Default)]
+pub struct Resources {
+    pub skill_packs: BTreeMap<String, SkillPack>,
+    pub mcp: McpCatalog,
+}
+
+/// Loads `skills/` and `mcp.yaml` from the company folder (both optional).
+pub(crate) fn load_resources(company_dir: &Path) -> Result<Resources> {
+    let mut resources = Resources::default();
+    let mut errors = Vec::new();
+
+    let skills_dir = company_dir.join("skills");
+    if skills_dir.is_dir() {
+        let mut dirs: Vec<PathBuf> = fs::read_dir(&skills_dir)?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.is_dir())
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let id = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if id.is_empty()
+                || !id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                errors.push(format!(
+                    "skill folder '{id}' must use lowercase letters, digits and '-'"
+                ));
+                continue;
+            }
+            match fs::read_to_string(dir.join("SKILL.md")) {
+                Ok(text) => {
+                    let pack = parse_skill(&id, text.trim_start_matches('\u{feff}'));
+                    if pack.body.trim().is_empty() {
+                        errors.push(format!("skill {id}: SKILL.md has no instructions"));
+                    }
+                    resources.skill_packs.insert(id, pack);
+                }
+                Err(err) => errors.push(format!("skill {id}: cannot read SKILL.md: {err}")),
+            }
+        }
+    }
+
+    let mcp_file = company_dir.join("mcp.yaml");
+    if mcp_file.is_file() {
+        let raw = fs::read_to_string(&mcp_file)?;
+        match serde_yaml_ng::from_str::<McpCatalog>(raw.trim_start_matches('\u{feff}')) {
+            Ok(catalog) => {
+                errors.extend(catalog.validate());
+                resources.mcp = catalog;
+            }
+            Err(err) => errors.push(format!("invalid mcp.yaml: {err}")),
+        }
+    }
+
+    if !errors.is_empty() {
+        bail!(
+            "invalid company resources in {}:\n- {}",
+            company_dir.display(),
+            errors.join("\n- ")
+        );
+    }
+    Ok(resources)
+}
+
+fn parse_skill(id: &str, text: &str) -> SkillPack {
+    let (front, body) = match text.strip_prefix("---") {
+        Some(rest) => match rest.split_once("\n---") {
+            Some((front, body)) => (front, body.trim_start_matches(['\r', '\n', '-'])),
+            None => ("", text),
+        },
+        None => ("", text),
+    };
+    let meta: serde_yaml_ng::Value = serde_yaml_ng::from_str(front).unwrap_or_default();
+    let field = |key: &str| meta.get(key).and_then(|v| v.as_str()).map(str::to_string);
+    SkillPack {
+        id: id.to_string(),
+        name: field("name").unwrap_or_else(|| id.to_string()),
+        description: field("description").unwrap_or_default(),
+        body: body.trim().to_string(),
+    }
+}
+
 pub struct Registry {
     root: PathBuf,
+    company_dir: PathBuf,
     employees: BTreeMap<String, Employee>,
+    resources: Resources,
 }
 
 impl Registry {
     /// Loads and validates every employee folder; all problems are reported at once.
     pub fn load(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref();
+        let company_dir = root.parent().unwrap_or(root).to_path_buf();
+        let resources = load_resources(&company_dir)?;
         let employees = load_dir(root)?;
 
-        let errors = validate(&employees);
+        let errors = validate(&employees, &resources);
         if !errors.is_empty() {
             bail!(
                 "invalid employee registry {}:\n- {}",
@@ -202,12 +316,73 @@ impl Registry {
 
         Ok(Self {
             root: root.to_path_buf(),
+            company_dir,
             employees,
+            resources,
         })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn company_dir(&self) -> &Path {
+        &self.company_dir
+    }
+
+    pub fn resources(&self) -> &Resources {
+        &self.resources
+    }
+
+    /// The job description plus every skill pack of the contract.
+    pub fn system_prompt(&self, employee: &Employee) -> String {
+        let mut prompt = employee.job_description.clone();
+        let packs: Vec<&SkillPack> = employee
+            .contract
+            .skill_packs
+            .iter()
+            .filter_map(|id| self.resources.skill_packs.get(id))
+            .collect();
+        if !packs.is_empty() {
+            prompt.push_str("\n\n# SKILLS\n");
+            for pack in packs {
+                prompt.push_str(&format!("\n## {}\n\n{}\n", pack.name, pack.body));
+            }
+        }
+        prompt
+    }
+
+    /// The MCP tools this employee may use, if any (servers start on first use).
+    pub fn toolbox_for(&self, employee: &Employee) -> Option<std::sync::Arc<Toolbox>> {
+        if employee.contract.mcp_servers.is_empty() {
+            return None;
+        }
+        let servers = employee
+            .contract
+            .mcp_servers
+            .iter()
+            .filter_map(|name| {
+                self.resources
+                    .mcp
+                    .servers
+                    .get(name)
+                    .map(|config| (name.clone(), config.clone()))
+            })
+            .collect();
+        Some(std::sync::Arc::new(Toolbox::new(
+            servers,
+            self.company_dir.clone(),
+        )))
+    }
+
+    /// Active subagents reporting to `manager_id`.
+    pub fn active_subagents_of(&self, manager_id: &str) -> Vec<&Employee> {
+        self.reports_of(manager_id)
+            .into_iter()
+            .filter(|employee| {
+                employee.is_active() && employee.contract.employee_type == EmployeeType::Subagent
+            })
+            .collect()
     }
 
     pub fn get(&self, employee_id: &str) -> Option<&Employee> {
@@ -303,7 +478,10 @@ pub(crate) fn load_employee(dir: &Path) -> Result<Employee> {
 }
 
 /// Structural rules of the company. Returns every violation found.
-pub(crate) fn validate(employees: &BTreeMap<String, Employee>) -> Vec<String> {
+pub(crate) fn validate(
+    employees: &BTreeMap<String, Employee>,
+    resources: &Resources,
+) -> Vec<String> {
     use EmployeeFunction as F;
     use EmployeeType as T;
 
@@ -379,7 +557,8 @@ pub(crate) fn validate(employees: &BTreeMap<String, Employee>) -> Vec<String> {
                         ));
                     }
                     for permission in &contract.permissions {
-                        if !manager.has(*permission) {
+                        // A veto belongs to a reviewer's specialist, not to the reviewer.
+                        if *permission != Capability::VetoReview && !manager.has(*permission) {
                             fail(format!(
                                 "permission {permission} exceeds manager {}'s permissions",
                                 contract.manager_id
@@ -419,6 +598,59 @@ pub(crate) fn validate(employees: &BTreeMap<String, Employee>) -> Vec<String> {
         }
         if contract.employee_type == T::Subagent && employee.has(Capability::DelegateSubtasks) {
             fail("subagents cannot delegate (maximum delegation depth is 1)".to_string());
+        }
+        let mut seen_permissions = Vec::new();
+        for permission in &contract.permissions {
+            if seen_permissions.contains(permission) {
+                fail(format!("permission {permission} is listed twice"));
+            }
+            seen_permissions.push(*permission);
+        }
+        for (field, items) in [
+            ("skill_packs", &contract.skill_packs),
+            ("mcp_servers", &contract.mcp_servers),
+        ] {
+            for (index, item) in items.iter().enumerate() {
+                if items[..index].contains(item) {
+                    fail(format!("{field}: '{item}' is listed twice"));
+                }
+            }
+        }
+        for pack in &contract.skill_packs {
+            if !resources.skill_packs.contains_key(pack) {
+                fail(format!(
+                    "unknown skill pack '{pack}' (company/skills/{pack}/SKILL.md)"
+                ));
+            }
+        }
+        for server in &contract.mcp_servers {
+            if !resources.mcp.servers.contains_key(server) {
+                fail(format!("unknown MCP server '{server}' (company/mcp.yaml)"));
+            }
+        }
+        if contract.employee_type == T::Subagent
+            && let Some(manager) = employees.get(&contract.manager_id)
+        {
+            for server in &contract.mcp_servers {
+                if !manager.contract.mcp_servers.contains(server) {
+                    fail(format!(
+                        "MCP server '{server}' exceeds manager {}'s servers",
+                        contract.manager_id
+                    ));
+                }
+            }
+        }
+        if employee.has(Capability::VetoReview) {
+            let under_reviewer = contract.employee_type == T::Subagent
+                && employees
+                    .get(&contract.manager_id)
+                    .is_some_and(|manager| manager.contract.function == F::Reviewer);
+            if !under_reviewer || !employee.has(Capability::ReviewWork) {
+                fail(
+                    "veto_review is only for a reviewer's subagent that also holds review_work"
+                        .to_string(),
+                );
+            }
         }
         for forbidden in &contract.forbidden_actions {
             if contract

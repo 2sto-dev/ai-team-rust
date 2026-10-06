@@ -51,7 +51,7 @@ pub struct TestRun {
     pub output: String,
 }
 
-fn allowed_env() -> Vec<(String, String)> {
+pub(crate) fn allowed_env() -> Vec<(String, String)> {
     std::env::vars()
         .filter(|(name, _)| ALLOWED_ENV.contains(&name.to_ascii_uppercase().as_str()))
         .collect()

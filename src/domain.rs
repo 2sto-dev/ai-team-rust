@@ -97,9 +97,37 @@ impl Verification {
                     "tests: `{}` -> {result} in {} s\noutput:\n{}\n",
                     test.command, test.duration_secs, test.output
                 ));
+                if !test.passed
+                    && let Some(hint) = diagnose(&test.output)
+                {
+                    report.push_str(&format!("diagnosis: {hint}\n"));
+                }
             }
         }
         report
+    }
+}
+
+/// Plain-language causes for test-runner failures a model tends to misread.
+fn diagnose(output: &str) -> Option<&'static str> {
+    if output.contains("NO TESTS RAN") || output.contains("Ran 0 tests") {
+        Some(
+            "unittest found no tests. Test files must be named test*.py (for example \
+             tests/test_report.py, not tests/report_test.py), test classes must subclass \
+             unittest.TestCase and test methods must start with test_.",
+        )
+    } else if output.contains("collected 0 items") || output.contains("no tests ran") {
+        Some(
+            "pytest found no tests. Test files must be named test_*.py or *_test.py and test \
+             functions must start with test_.",
+        )
+    } else if output.contains("ModuleNotFoundError") || output.contains("ImportError") {
+        Some(
+            "the tests cannot import the code. Check module and package names, that package \
+             folders have an __init__.py, and that imports match the file layout.",
+        )
+    } else {
+        None
     }
 }
 
@@ -123,6 +151,8 @@ pub enum Role {
     Architect,
     Builder,
     Reviewer,
+    /// A subagent working for a department lead.
+    Specialist,
 }
 
 impl fmt::Display for Role {
@@ -132,6 +162,7 @@ impl fmt::Display for Role {
             Role::Architect => "Architect",
             Role::Builder => "Builder",
             Role::Reviewer => "Reviewer",
+            Role::Specialist => "Specialist",
         })
     }
 }
@@ -278,5 +309,43 @@ impl TeamState {
             written_files: Vec::new(),
             usage: UsageTotals::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed_run(output: &str) -> Verification {
+        Verification {
+            files_written: vec!["tests/report_test.py".to_string()],
+            test: Some(TestRun {
+                command: "python -m unittest discover -s tests".to_string(),
+                exit_code: Some(5),
+                timed_out: false,
+                passed: false,
+                duration_secs: 0,
+                output: output.to_string(),
+            }),
+            ..Verification::default()
+        }
+    }
+
+    #[test]
+    fn failed_tests_get_a_diagnosis_when_the_cause_is_known() {
+        let report = failed_run("Ran 0 tests in 0.000s\n\nNO TESTS RAN").report();
+        assert!(
+            report.contains("diagnosis: unittest found no tests"),
+            "{report}"
+        );
+
+        let report = failed_run("ModuleNotFoundError: No module named 'raport'").report();
+        assert!(report.contains("cannot import the code"), "{report}");
+
+        let report = failed_run("AssertionError: 2 != 3").report();
+        assert!(
+            !report.contains("diagnosis"),
+            "no guessing for ordinary failures"
+        );
     }
 }

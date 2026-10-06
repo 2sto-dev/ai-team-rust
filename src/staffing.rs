@@ -4,11 +4,18 @@
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    agents::{Agent, architect::Architect, builder::Builder, reviewer::Reviewer},
+    agents::{
+        Agent,
+        architect::Architect,
+        builder::Builder,
+        lead::BuilderLead,
+        reviewer::{Advisor, Reviewer},
+        specialist::Specialist,
+    },
     config::ModelConfig,
     domain::{Role, TeamAssignment},
     llm::ProviderFactory,
-    registry::{Employee, EmployeeFunction, Registry},
+    registry::{Capability, Employee, EmployeeFunction, Registry},
 };
 
 pub struct Team {
@@ -73,6 +80,9 @@ pub fn same_model_warning(registry: &Registry, assignment: &TeamAssignment) -> O
 }
 
 /// Builds the agents; call only after `validate_assignment` succeeded.
+/// Builds the agents; call only after `validate_assignment` succeeded. Each employee gets
+/// its job description plus skill packs as system prompt and its MCP tools. A Builder with
+/// active implementer subagents leads them; a Reviewer's reviewing subagents advise it.
 pub fn build_team(
     registry: &Registry,
     assignment: &TeamAssignment,
@@ -88,22 +98,94 @@ pub fn build_team(
     let builder = employee(&assignment.builder)?;
     let reviewer = employee(&assignment.reviewer)?;
 
+    let specialist = |subagent: &Employee| -> Result<Specialist> {
+        let contract = &subagent.contract;
+        let mut profile = format!(
+            "{} | skills: {}",
+            contract.title,
+            contract.skills.join(", ")
+        );
+        if !contract.skill_packs.is_empty() {
+            profile.push_str(&format!(
+                " | skill packs: {}",
+                contract.skill_packs.join(", ")
+            ));
+        }
+        if !contract.mcp_servers.is_empty() {
+            profile.push_str(&format!(" | tools: {}", contract.mcp_servers.join(", ")));
+        }
+        Ok(Specialist::new(
+            subagent.id(),
+            registry.system_prompt(subagent),
+            providers(Role::Specialist, model_of(subagent)?)?,
+        )
+        .with_toolbox(registry.toolbox_for(subagent))
+        .with_profile(profile))
+    };
+
+    let builder_agent: Box<dyn Agent> = {
+        let team: Vec<Specialist> = if builder.has(Capability::DelegateSubtasks) {
+            registry
+                .active_subagents_of(builder.id())
+                .into_iter()
+                .filter(|subagent| subagent.has(Capability::WriteImplementation))
+                .map(specialist)
+                .collect::<Result<_>>()?
+        } else {
+            Vec::new()
+        };
+        let llm = providers(Role::Builder, model_of(builder)?)?;
+        if team.is_empty() {
+            Box::new(
+                Builder::new(builder.id(), registry.system_prompt(builder), llm)
+                    .with_toolbox(registry.toolbox_for(builder)),
+            )
+        } else {
+            Box::new(BuilderLead::new(
+                builder.id(),
+                registry.system_prompt(builder),
+                llm,
+                registry.toolbox_for(builder),
+                team,
+            ))
+        }
+    };
+
+    let advisors: Vec<Advisor> = if reviewer.has(Capability::DelegateSubtasks) {
+        registry
+            .active_subagents_of(reviewer.id())
+            .into_iter()
+            .filter(|subagent| subagent.has(Capability::ReviewWork))
+            .map(|subagent| {
+                Ok(Advisor {
+                    veto: subagent.has(Capability::VetoReview),
+                    specialist: specialist(subagent)?,
+                })
+            })
+            .collect::<Result<_>>()?
+    } else {
+        Vec::new()
+    };
+
     Ok(Team {
-        architect: Box::new(Architect::new(
-            architect.id(),
-            architect.job_description.clone(),
-            providers(Role::Architect, model_of(architect)?)?,
-        )),
-        builder: Box::new(Builder::new(
-            builder.id(),
-            builder.job_description.clone(),
-            providers(Role::Builder, model_of(builder)?)?,
-        )),
-        reviewer: Box::new(Reviewer::new(
-            reviewer.id(),
-            reviewer.job_description.clone(),
-            providers(Role::Reviewer, model_of(reviewer)?)?,
-        )),
+        architect: Box::new(
+            Architect::new(
+                architect.id(),
+                registry.system_prompt(architect),
+                providers(Role::Architect, model_of(architect)?)?,
+            )
+            .with_toolbox(registry.toolbox_for(architect)),
+        ),
+        builder: builder_agent,
+        reviewer: Box::new(
+            Reviewer::new(
+                reviewer.id(),
+                registry.system_prompt(reviewer),
+                providers(Role::Reviewer, model_of(reviewer)?)?,
+            )
+            .with_toolbox(registry.toolbox_for(reviewer))
+            .with_advisors(advisors),
+        ),
     })
 }
 

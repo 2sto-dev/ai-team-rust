@@ -12,6 +12,7 @@ use std::{
 
 use ai_team::{
     BoxFuture,
+    agents::lead::DELEGATION_HEADING,
     config::{ModelConfig, ProviderKind},
     domain::{ProjectConfig, Role},
     llm::{Completion, LlmProvider, ProviderFactory, Usage},
@@ -201,6 +202,17 @@ impl TestLlm {
     }
 }
 
+/// The `- item` lines right after the line starting with `heading`.
+fn section_lines(prompt: &str, heading: &str) -> Vec<String> {
+    prompt
+        .lines()
+        .skip_while(|line| !line.starts_with(heading))
+        .skip(1)
+        .take_while(|line| line.starts_with("- "))
+        .map(|line| line[2..].trim().to_string())
+        .collect()
+}
+
 fn first_candidate(prompt: &str, function: &str) -> String {
     prompt
         .lines()
@@ -223,6 +235,33 @@ impl LlmProvider for TestLlm {
     ) -> BoxFuture<'a, Result<Completion>> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         let answer = match self.role {
+            // A lead asked to delegate gives every team member one file of its own.
+            Role::Builder if user_prompt.contains(DELEGATION_HEADING) => {
+                let subtasks: Vec<Value> = section_lines(user_prompt, "YOUR TEAM")
+                    .iter()
+                    .filter_map(|line| line.split(" | ").next())
+                    .map(|id| {
+                        serde_json::json!({
+                            "assignee": id,
+                            "title": format!("part of {id}"),
+                            "instructions": "write your file",
+                            "files": [format!("work/{}.txt", id.to_lowercase())],
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "subtasks": subtasks }).to_string()
+            }
+            // A subagent writes exactly the files it owns; as a reviewer's advisor it approves.
+            Role::Specialist if user_prompt.contains("FILES YOU OWN") => {
+                section_lines(user_prompt, "FILES YOU OWN")
+                    .iter()
+                    .map(|path| format!("### FILE: {path}\n```\nwritten by a specialist\n```\n"))
+                    .collect::<String>()
+            }
+            Role::Specialist => {
+                serde_json::json!({ "decision": "APPROVED", "feedback": "advisor: fine" })
+                    .to_string()
+            }
             Role::Planner if user_prompt.contains(TASK_PLAN_HEADING) => {
                 test_task_plan().to_string()
             }

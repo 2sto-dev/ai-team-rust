@@ -372,6 +372,77 @@ impl Store {
             .transpose()
     }
 
+    /// Adds one task written by the Owner (no dependencies) under `milestone`, created if
+    /// needed. A project without a plan becomes runnable. Returns the new task id.
+    pub fn add_owner_task(
+        &self,
+        project_id: &str,
+        milestone: &str,
+        title: &str,
+        description: &str,
+        acceptance: &[String],
+        iteration_budget: u32,
+    ) -> Result<String> {
+        let at = now();
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+
+        let milestone_id = match tx
+            .query_row(
+                "SELECT id FROM milestones WHERE project_id = ?1 AND name = ?2",
+                params![project_id, milestone],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+        {
+            Some(id) => id,
+            None => {
+                let position: i64 = tx.query_row(
+                    "SELECT COALESCE(MAX(position) + 1, 0) FROM milestones WHERE project_id = ?1",
+                    params![project_id],
+                    |row| row.get(0),
+                )?;
+                tx.execute(
+                    "INSERT INTO milestones (project_id, name, position) VALUES (?1, ?2, ?3)",
+                    params![project_id, milestone, position],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+
+        let (count, position): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(MAX(position) + 1, 0) FROM tasks WHERE project_id = ?1",
+            params![project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let id = format!("{project_id}-T{:02}", count + 1);
+        tx.execute(
+            "INSERT INTO tasks (id, project_id, milestone_id, position, title, description,
+                                acceptance_json, status, iteration_budget, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+            params![
+                id,
+                project_id,
+                milestone_id,
+                position,
+                title,
+                description,
+                serde_json::to_string(acceptance)?,
+                TaskStatus::Planned.as_str(),
+                iteration_budget,
+                at
+            ],
+        )?;
+        // Owner tasks need no plan approval; a finished project reopens for the new work.
+        tx.execute(
+            "UPDATE projects SET status = ?2, updated_at = ?3
+             WHERE id = ?1 AND status IN ('PLANNING', 'DONE')",
+            params![project_id, ProjectStatus::Planned.as_str(), at],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
     /// Creates the milestones, tasks and dependencies of an approved plan in one transaction.
     /// Task ids are `<project>-T01`, `<project>-T02`, ... in execution order.
     pub fn approve_plan(

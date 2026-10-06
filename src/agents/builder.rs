@@ -6,14 +6,16 @@ use crate::{
     BoxFuture,
     domain::{AgentOutput, Artifact, ArtifactKind, Role, WorkOrder},
     llm::LlmProvider,
+    mcp::Toolbox,
 };
 
-use super::{Agent, AgentContext, prompt::project_context};
+use super::{Agent, AgentContext, prompt::project_context, tooling::answer};
 
 pub struct Builder {
     name: String,
     system_prompt: String,
     llm: Arc<dyn LlmProvider>,
+    toolbox: Option<Arc<Toolbox>>,
 }
 
 impl Builder {
@@ -26,10 +28,17 @@ impl Builder {
             name: name.into(),
             system_prompt: system_prompt.into(),
             llm,
+            toolbox: None,
         }
     }
 
-    async fn build(&self, order: &WorkOrder) -> Result<Artifact> {
+    /// MCP tools the model may call while working.
+    pub fn with_toolbox(mut self, toolbox: Option<Arc<Toolbox>>) -> Self {
+        self.toolbox = toolbox;
+        self
+    }
+
+    async fn build(&self, ctx: &AgentContext, order: &WorkOrder) -> Result<Artifact> {
         let spec = order
             .specification
             .as_ref()
@@ -90,7 +99,14 @@ REVIEWER FEEDBACK ON THE PREVIOUS IMPLEMENTATION:
             prompt.push_str(&format!("\n{workspace}\n"));
         }
 
-        let content = self.llm.complete(&self.system_prompt, &prompt).await?;
+        let content = answer(
+            self.llm.as_ref(),
+            &self.system_prompt,
+            &prompt,
+            self.toolbox.as_deref(),
+            ctx,
+        )
+        .await?;
 
         Ok(Artifact {
             kind: ArtifactKind::Implementation,
@@ -116,9 +132,9 @@ impl Agent for Builder {
 
     fn execute<'a>(
         &'a self,
-        _ctx: &'a AgentContext,
+        ctx: &'a AgentContext,
         order: &'a WorkOrder,
     ) -> BoxFuture<'a, Result<AgentOutput>> {
-        Box::pin(async move { self.build(order).await.map(AgentOutput::Artifact) })
+        Box::pin(async move { self.build(ctx, order).await.map(AgentOutput::Artifact) })
     }
 }

@@ -18,6 +18,10 @@ skills:
   - implementation
   - testing
   - integration
+skill_packs:
+  - python-unittest
+mcp_servers:
+  - pydoc
 permissions:
   - write_implementation
   - delegate_subtasks

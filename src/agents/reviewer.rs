@@ -1,22 +1,40 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use serde_json::json;
 
 use crate::{
     BoxFuture,
-    domain::{AgentOutput, ReviewResult, Role, WorkOrder},
+    domain::{AgentOutput, ReviewDecision, ReviewResult, ReviewTarget, Role, WorkOrder},
     llm::LlmProvider,
+    mcp::Toolbox,
 };
 
 use super::{
     Agent, AgentContext,
     prompt::{parse_json_reply, project_context},
+    specialist::Specialist,
+    tooling::answer,
 };
+
+/// A reviewer's subagent. Its verdict is advisory, unless it holds a veto.
+pub struct Advisor {
+    pub specialist: Specialist,
+    pub veto: bool,
+}
+
+struct AdvisorVerdict {
+    name: String,
+    veto: bool,
+    review: ReviewResult,
+}
 
 pub struct Reviewer {
     name: String,
     system_prompt: String,
     llm: Arc<dyn LlmProvider>,
+    toolbox: Option<Arc<Toolbox>>,
+    advisors: Vec<Advisor>,
 }
 
 impl Reviewer {
@@ -29,10 +47,58 @@ impl Reviewer {
             name: name.into(),
             system_prompt: system_prompt.into(),
             llm,
+            toolbox: None,
+            advisors: Vec::new(),
         }
     }
 
-    async fn review(&self, order: &WorkOrder) -> Result<ReviewResult> {
+    pub fn with_toolbox(mut self, toolbox: Option<Arc<Toolbox>>) -> Self {
+        self.toolbox = toolbox;
+        self
+    }
+
+    pub fn with_advisors(mut self, advisors: Vec<Advisor>) -> Self {
+        self.advisors = advisors;
+        self
+    }
+
+    /// Advisory reviews from the reviewer's subagents. A veto holder that fails or answers
+    /// badly counts as a rejection: a veto never fails open.
+    async fn consult(&self, ctx: &AgentContext, prompt: &str) -> Result<Vec<AdvisorVerdict>> {
+        let mut verdicts = Vec::new();
+        for advisor in &self.advisors {
+            let name = advisor.specialist.name().to_string();
+            let sub_ctx = ctx.child(&name);
+            let review = match advisor.specialist.work(&sub_ctx, prompt).await {
+                Ok(raw) => parse_json_reply::<ReviewResult>(&raw),
+                Err(err) => {
+                    sub_ctx.record("ADVISOR_FAILED", &json!({ "error": format!("{err:#}") }))?;
+                    None
+                }
+            };
+            let review = match (review, advisor.veto) {
+                (Some(review), _) => review,
+                (None, true) => ReviewResult {
+                    decision: ReviewDecision::ChangesRequired,
+                    target: ReviewTarget::Builder,
+                    feedback: format!("{name} gave no valid verdict; a veto holder fails closed"),
+                },
+                (None, false) => continue,
+            };
+            sub_ctx.record(
+                "ADVISOR_REVIEW",
+                &json!({ "veto": advisor.veto, "review": review }),
+            )?;
+            verdicts.push(AdvisorVerdict {
+                name,
+                veto: advisor.veto,
+                review,
+            });
+        }
+        Ok(verdicts)
+    }
+
+    async fn review(&self, ctx: &AgentContext, order: &WorkOrder) -> Result<ReviewResult> {
         let spec = order
             .specification
             .as_ref()
@@ -83,8 +149,31 @@ Builder cannot meet the acceptance criteria by following it. Otherwise use "buil
             ));
         }
 
+        let advisory = self.consult(ctx, &prompt).await?;
+        if !advisory.is_empty() {
+            prompt.push_str(
+                "\nADVISORY REVIEWS (from your specialists; a VETO rejection cannot be overruled):\n",
+            );
+            for verdict in &advisory {
+                prompt.push_str(&format!(
+                    "- {}{}: {:?} - {}\n",
+                    verdict.name,
+                    if verdict.veto { " [VETO]" } else { "" },
+                    verdict.review.decision,
+                    verdict.review.feedback
+                ));
+            }
+        }
+
         // A malformed reply is asked again, never interpreted: only a well-formed verdict counts.
-        let mut raw = self.llm.complete(&self.system_prompt, &prompt).await?;
+        let mut raw = answer(
+            self.llm.as_ref(),
+            &self.system_prompt,
+            &prompt,
+            self.toolbox.as_deref(),
+            ctx,
+        )
+        .await?;
         for _ in 0..FORMAT_RETRIES {
             if parse_json_reply::<ReviewResult>(&raw).is_some() {
                 break;
@@ -96,7 +185,26 @@ Builder cannot meet the acceptance criteria by following it. Otherwise use "buil
             );
             raw = self.llm.complete(&self.system_prompt, &retry).await?;
         }
-        parse_review(&raw)
+        let review = parse_review(&raw)?;
+
+        // The veto is enforced by the platform, whatever the Reviewer decided.
+        if let Some(veto) = advisory.iter().find(|verdict| {
+            verdict.veto && verdict.review.decision == ReviewDecision::ChangesRequired
+        }) {
+            ctx.record(
+                "VETO_APPLIED",
+                &json!({ "by": veto.name, "feedback": veto.review.feedback }),
+            )?;
+            return Ok(ReviewResult {
+                decision: ReviewDecision::ChangesRequired,
+                target: ReviewTarget::Builder,
+                feedback: format!(
+                    "Veto by {}: {}\n\nReviewer: {}",
+                    veto.name, veto.review.feedback, review.feedback
+                ),
+            });
+        }
+        Ok(review)
     }
 }
 
@@ -118,10 +226,10 @@ impl Agent for Reviewer {
 
     fn execute<'a>(
         &'a self,
-        _ctx: &'a AgentContext,
+        ctx: &'a AgentContext,
         order: &'a WorkOrder,
     ) -> BoxFuture<'a, Result<AgentOutput>> {
-        Box::pin(async move { self.review(order).await.map(AgentOutput::Review) })
+        Box::pin(async move { self.review(ctx, order).await.map(AgentOutput::Review) })
     }
 }
 

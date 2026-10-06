@@ -95,6 +95,21 @@ fn rejects_invalid_contracts() {
             "separation of duties",
         ),
         (
+            "duplicate permission",
+            |c| {
+                edit_contract(
+                    c,
+                    "EMP-BUILD-001",
+                    "  - delegate_subtasks
+",
+                    "  - delegate_subtasks
+  - delegate_subtasks
+",
+                )
+            },
+            "listed twice",
+        ),
+        (
             "function without its capability",
             |c| edit_contract(c, "EMP-REV-001", "  - review_work\n", ""),
             "requires permission review_work",

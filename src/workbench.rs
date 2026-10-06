@@ -33,6 +33,8 @@ pub struct TaskWorkbench {
     task_id: String,
     test_command: Option<String>,
     test_timeout: Duration,
+    /// Files with merge conflict markers left by bringing the branch up to date with main.
+    conflicts: Vec<String>,
 }
 
 impl TaskWorkbench {
@@ -47,7 +49,13 @@ impl TaskWorkbench {
             task_id: task_id.into(),
             test_command: test_command.filter(|command| !command.trim().is_empty()),
             test_timeout,
+            conflicts: Vec::new(),
         }
+    }
+
+    pub fn with_conflicts(mut self, conflicts: Vec<String>) -> Self {
+        self.conflicts = conflicts;
+        self
     }
 
     pub fn workspace(&self) -> &Workspace {
@@ -57,6 +65,16 @@ impl TaskWorkbench {
 
 impl Workbench for TaskWorkbench {
     fn briefing(&self) -> Result<String> {
+        let conflicts = if self.conflicts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "MERGE CONFLICTS: bringing this task up to date with the main branch left \
+                 conflict markers (<<<<<<< ======= >>>>>>>) in: {}. Rewrite each of these files \
+                 completely, combining both sides correctly, before anything else.\n\n",
+                self.conflicts.join(", ")
+            )
+        };
         let tests = match &self.test_command {
             Some(command) => format!(
                 "- After writing, the platform runs the Owner's test command `{command}` in the \
@@ -68,7 +86,7 @@ impl Workbench for TaskWorkbench {
             }
         };
         Ok(format!(
-            "WORKSPACE (the project's files as this task sees them):\n{}\n\n\
+            "{conflicts}WORKSPACE (the project's files as this task sees them):\n{}\n\n\
              HOW YOUR ANSWER IS APPLIED:\n\
              - Write every file you create or change as a heading `### FILE: relative/path` \
              followed by ONE fenced code block with the COMPLETE file content.\n\

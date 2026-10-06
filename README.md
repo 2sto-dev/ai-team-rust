@@ -1,7 +1,7 @@
 # AI Team — Rust Control Plane
 
 O firmă software AI reutilizabilă, scrisă în Rust. Planul complet, pe faze, este în
-[firma.md](firma.md); acest README descrie ce funcționează acum (fazele 1–4).
+[firma.md](firma.md); acest README descrie ce funcționează acum (fazele 1–4 și 5a).
 
 ```text
 OWNER (uman)
@@ -41,11 +41,14 @@ ai-team-rust/
 │   │   └── EMP-XXX-001/
 │   │       ├── contract.yaml       # contractul operațional
 │   │       └── job_description.md  # fișa postului = prompt-ul de sistem al agentului
-│   └── proposals/           # propuneri de angajare, în așteptarea aprobării Owner-ului
+│   ├── proposals/           # propuneri de angajare, în așteptarea aprobării Owner-ului
+│   ├── skills/<id>/SKILL.md # pachete de instrucțiuni (skill-uri)
+│   ├── mcp.yaml             # serverele MCP ale firmei
+│   └── mcp/                 # servere MCP locale (pydoc_server.py)
 ├── projects/                # lucrările firmei (JSON)
 ├── scripts/
 ├── src/
-│   ├── agents/              # trait Agent + Architect, Builder, Reviewer
+│   ├── agents/              # trait Agent + Architect, Builder/lead, Reviewer/consilieri, Specialist, tool calling
 │   ├── registry/            # registru, validare, procedura de angajare
 │   ├── planner.rs           # Planner-ul (propune echipa și planul de taskuri)
 │   ├── project/             # Faza 3: plan, SQLite + artefacte, executor, decizii Owner
@@ -53,13 +56,15 @@ ai-team-rust/
 │   ├── workbench.rs         # Faza 4: porțile verificare -> review -> îmbinare
 │   ├── staffing.rs          # control plane: validează echipa, construiește agenții
 │   ├── orchestrator.rs      # workflow-ul
-│   ├── llm.rs               # provideri: ollama, openai, claude (timeout + retry)
+│   ├── llm.rs               # provideri: ollama, openai, claude (timeout, retry, tool calling, consum)
+│   ├── mcp.rs               # client MCP (stdio) + Toolbox per angajat
 │   ├── audit.rs  config.rs  domain.rs  main.rs  lib.rs
 └── tests/
     ├── registry.rs          # regulile firmei, angajare, status
     ├── workflow.rs          # fluxul, staffing, subagenți
     ├── projects.rs          # plan, execuție, reluare, decizii Owner, artefacte, rapoarte
     ├── execution.rs         # fișiere, teste ca poartă, îmbinare cu conflicte, permisiuni, consum
+    ├── subagents.rs         # skill-uri, MCP, tool calling, delegare, veto
     └── http_provider.rs     # retry / timeout pe un server HTTP local
 ```
 
@@ -99,6 +104,69 @@ Architect -> Builder -> Reviewer (CHANGES_REQUIRED -> Builder din nou ...) -> AP
 Testele automate nu folosesc rețeaua: injectează în cod un model fals (doar în `tests/`), pe care
 niciun contract nu îl poate cere.
 
+## Consola Owner-ului
+
+```powershell
+cargo run -- console                     # pornește cu un proiect nou
+cargo run -- console --project <id>      # continuă un proiect existent
+```
+
+```text
+=== proiect nou ===
+> Scrie un modul Python saluturi.py cu funcția salut(nume) care întoarce 'Salut, <nume>!'.
+  Adaugă teste unittest care citesc numele din inputs/nume.txt.
+                                           <- rând gol = trimite cererea
+Fișiere pentru echipa (cale sau trage fișierul aici; Enter gol = gata):
+  fisier> "C:\Users\...\nume.txt"         <- poți trage fișierul în fereastră
+  fisier>
+Comanda de test (Enter = fără teste): python -m unittest discover -s tests -v
+Pornesc echipa? [D/n]
+  [proiect-T01] architect: specification ready     <- progresul, în timp real
+  [proiect-T01] builder: iteration 1 ready
+  [proiect-T01] platform: verification passed (3 file(s), tests green)
+  [proiect-T01] reviewer: APPROVED
+  ...
+```
+
+- cererea poate avea mai multe rânduri; un rând gol o trimite;
+- fișierele (inclusiv căi cu ghilimele, cum le pune Windows când tragi un fișier) ajung în
+  `inputs/` din proiect;
+- după prima cerere rămâi în același proiect: următoarea cerere devine un task nou al lui;
+- un task oprit (teste roșii, veto) te întreabă pe loc: **[r]** reia cu o notă pentru echipă,
+  **[a]** acceptă, **[c]** anulează, Enter = lasă-l așa;
+- comenzi: `/nou` (proiect nou), `/proiect <id>`, `/status`, `/ajutor`, `/iesire`.
+
+## Cerere rapidă a Owner-ului
+
+Același lucru, dintr-o singură comandă (pentru scripturi): scrii ce vrei, atașezi fișiere,
+iar echipa se pune pe treabă imediat.
+
+```powershell
+cargo run -- request "Scrie un modul raport.py care calculează totalul pe categorie din cheltuieli.csv, cu teste" `
+  --file C:\cale\cheltuieli.csv `
+  --test-command "python -m unittest discover -s tests -v"
+```
+
+- se creează un proiect nou din textul tău (obiectivul = cererea ta);
+- fișierele se copiază în repository-ul proiectului, în `inputs/`, cu un commit al Owner-ului;
+  toată echipa vede lista lor și primele rânduri din fiecare fișier text;
+- cererea devine direct un task — instrucțiunea ta e aprobarea, fără plan intermediar — și trece
+  prin tot fluxul: Architect → Builder (cu subagenți) → teste → Reviewer (cu Security) → merge;
+- la final vezi statusul, fișierele produse și unde sunt (`data/workspaces/<proiect>`, branch `main`).
+
+Opțiuni:
+
+| Opțiune | Efect |
+|---|---|
+| `--file <cale>` | atașează un fișier (se poate repeta; maximum 10 MB/fișier) |
+| `--project <id>` | adaugă cererea ca task nou într-un proiect existent (și îl redeschide dacă era gata) |
+| `--test-command "..."` | comanda care trebuie să treacă după fiecare răspuns al Builder-ului |
+| `--plan` | Planner-ul împarte cererea în mai multe taskuri, pe care le aprobi înainte de start |
+| `--yes` | aprobă planul fără întrebare (cu `--plan`) |
+
+Un task oprit (teste care nu trec, veto) așteaptă decizia ta, ca orice alt task: `task show`,
+`task resume --note "..."`, `task accept`, `task cancel`.
+
 ## Registrul de angajați
 
 Exemplu de contract (`company/employees/EMP-BUILD-001/contract.yaml`):
@@ -135,6 +203,7 @@ Permisiunile existente (doar cele pe care platforma le impune deja):
 | `delegate_subtasks` | a avea subagenți |
 | `write_workspace` | platforma scrie răspunsurile în workspace (cere `write_implementation`) |
 | `run_tests` | platforma rulează comanda de test pe muncă (cere `write_implementation`) |
+| `veto_review` | consilier al Reviewer-ului al cărui „nu” nu poate fi anulat (cere `review_work`) |
 
 
 Registrul e validat la fiecare încărcare; toate erorile sunt raportate deodată. Reguli principale:
@@ -320,7 +389,7 @@ Builder răspunde cu fișiere  ──>  platforma le scrie pe branch-ul task/<id
 **Comanda de test** se pune în JSON-ul proiectului sau ulterior:
 
 ```json
-"test_command": "python -m unittest discover -s tests -t . -v",
+"test_command": "python -m unittest discover -s tests -v",
 "test_timeout_secs": 120
 ```
 
@@ -360,6 +429,9 @@ def word_count(text: str) -> int: ...
 - la aprobare, `EMP-ORCH-001` face `git merge --no-ff task/<id>` în `main`, cu mesaj
   „Merge <task>: <titlu> — Approved by EMP-REV-001 after N iteration(s)”; un conflict anulează
   merge-ul (`main` rămâne neatins) și oprește taskul;
+- **un task reluat își aduce întâi branch-ul la zi cu `main`** (merge); dacă apar conflicte,
+  fișierele rămân cu marcajele `<<<<<<<` și Builder-ul primește lista lor ca primă sarcină —
+  testele și Reviewer-ul verifică rezolvarea, iar merge-ul final în `main` devine curat;
 - un task oprit rămâne pe branch-ul lui — îl poți inspecta cu orice unealtă git
   (`git log main..task/<id>`, `git diff main task/<id>`);
 - taskurile rulează pe rând, deci un singur working tree e suficient; între taskuri e pe `main`.
@@ -398,17 +470,77 @@ dacă pui prețurile în contract (`cost_per_mtok_input`, `cost_per_mtok_output`
 
 Nu modifici codul Rust: creezi `projects\proiect-nou.json` și rulezi `run --project` cu el.
 
-## Subagenți
+## Subagenți, skill-uri și servere MCP (Faza 5a)
 
-Orchestratorul vorbește cu fiecare șef de departament doar prin trait-ul `Agent`
-(`src/agents/mod.rs`): primește un `WorkOrder` și întoarce un `AgentOutput`
-(un `Artifact` versionat sau un `ReviewResult`). Un șef poate fi un singur apel LLM sau poate
-delega mai departe către subagenți proprii — orchestratorul nu vede diferența
-(`Orchestrator::with_agents` primește orice implementare).
+```text
+EMP-BUILD-001 Builder (lead)      skills: python-unittest; mcp: pydoc
+├─ EMP-PY-001 Python Developer   skills: python-unittest; mcp: pydoc
+└─ EMP-QA-001 Testing Engineer   skills: python-unittest; mcp: pydoc
+EMP-REV-001 Reviewer
+└─ EMP-SEC-001 Security Specialist   skills: secure-code-review; VETO
+```
 
-Șeful își cheamă subagenții cu `ctx.child("Nume")`; fiecare primește un `span_id` propriu cu
-`parent_span_id` = span-ul șefului, așa că auditul se poate reconstitui ca arbore.
-Exemplu complet: testul `lead_can_delegate_to_subagents_with_nested_audit_spans` din `tests/workflow.rs`.
+**Delegare.** Un Builder cu `delegate_subtasks` și subagenți activi cu `write_implementation`
+devine *lead*: la fiecare iterație împarte munca în subtaskuri (cel mult 4), fiecare cu un
+subagent și **fișierele pe care le deține**. Control plane-ul verifică împărțirea (subagenți din
+echipa lui, fișiere valide, niciun fișier în două subtaskuri); o împărțire invalidă e trimisă
+înapoi o dată, apoi lead-ul lucrează singur. Fiecare subagent primește doar contextul subtaskului
+lui (nu și celelalte subtaskuri); fișierele scrise în afara listei lui sunt **aruncate de platformă**.
+Rezultatele se combină și trec prin aceleași porți (teste → Reviewer → merge). Auditul arată
+`DELEGATION_PLANNED`, `SUBTASK_STARTED`/`SUBTASK_DONE` (cu ce s-a păstrat și ce s-a aruncat), cu
+subagentul ca span copil al lead-ului.
 
-Subagenții din registru (`employee_type: subagent`) sunt validați și apar în organigramă, dar
-execuția lor automată vine odată cu Worker Gateway (Faza 5 din `firma.md`).
+**Consilierii Reviewer-ului și vetoul.** Subagenții Reviewer-ului cu `review_work` dau review-uri
+consultative, incluse în promptul Reviewer-ului. Unul cu `veto_review` are drept de **veto**: dacă
+respinge, rezultatul final e `CHANGES_REQUIRED`, orice ar decide Reviewer-ul (`VETO_APPLIED` în
+audit). Un consilier cu veto care nu răspunde sau răspunde invalid contează ca respingere.
+
+**Skill-uri** — pachete de instrucțiuni în `company/skills/<id>/SKILL.md`:
+
+```markdown
+---
+name: Python with unittest
+description: Small, standard-library Python modules with unittest tests.
+---
+- Tests live in `tests/` as `test_*.py` ...
+```
+
+Un angajat le primește prin `skill_packs: [python-unittest]` în contract; textul lor se adaugă la
+fișa postului (promptul de sistem). Livrate: `python-unittest`, `secure-code-review`.
+
+**Servere MCP** — definite o singură dată de Owner în `company/mcp.yaml`:
+
+```yaml
+servers:
+  pydoc:
+    description: Python standard-library documentation (local, read-only)
+    command: python
+    args: ["mcp/pydoc_server.py"]
+    env: {}           # variabile literale, nesecrete
+    env_from: []      # variabile copiate din mediul platformei (așa ajung secretele la un server)
+    timeout_secs: 20
+```
+
+Un angajat le primește prin `mcp_servers: [pydoc]`. Platforma pornește serverul (transport stdio,
+protocol MCP), îi citește uneltele și le oferă modelului prin tool calling în toate cele trei
+dialecte (Ollama, OpenAI, Claude); modelul poate face cel mult 8 runde de apeluri per răspuns.
+Fiecare apel apare în audit (`TOOL_CALL`: unealta, argumentele, dacă a fost eroare). Serverul
+primește un mediu curățat plus doar ce permite `env`/`env_from`. Livrat: `pydoc`
+(`company/mcp/pydoc_server.py`, doar biblioteca standard Python; refuză orice nu e în ea).
+
+**Reguli** (validate la încărcarea registrului): un skill sau server inexistent face contractul
+invalid; un subagent nu poate avea un server MCP pe care managerul lui nu-l are; `veto_review`
+doar pentru un subagent al Reviewer-ului care are și `review_work`; intrările duplicate sunt
+respinse. `doctor` pornește fiecare server MCP folosit și îi listează uneltele.
+
+**Angajarea unui subagent** — aceeași procedură; scheletul are deja `skill_packs` și `mcp_servers`:
+
+```powershell
+cargo run -- hire propose EMP-PY-001 --name "Python Developer" --function specialist --manager EMP-BUILD-001
+# completează TODO, skill_packs, mcp_servers în company\proposals\EMP-PY-001\
+cargo run -- hire approve EMP-PY-001
+```
+
+Orchestratorul vorbește cu fiecare șef doar prin trait-ul `Agent` (`src/agents/mod.rs`), deci un
+șef poate fi un singur apel LLM sau o echipă — orchestratorul nu vede diferența. Subagenții Python
+prin Worker Gateway (Faza 5b) vor folosi același contract.

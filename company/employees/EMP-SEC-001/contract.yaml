@@ -1,0 +1,31 @@
+# Operational contract for EMP-SEC-001 (created with `ai-team hire propose`)
+employee_id: EMP-SEC-001
+name: "Security Specialist"
+title: "Security Specialist"
+department: "quality"
+manager_id: EMP-REV-001
+employee_type: subagent
+function: specialist
+status: active
+model:
+  provider: ollama
+  model: qwen2.5:14b
+  base_url: http://10.10.0.14:11434
+  temperature: 0.1
+  num_ctx: 32768
+  num_predict: 1200
+  timeout_secs: 180
+  max_retries: 2
+  retry_backoff_ms: 1000
+skills:
+  - security review
+  - input validation
+  - secrets handling
+# Skill packs from company/skills/<id>/ and MCP servers from company/mcp.yaml:
+skill_packs:
+  - secure-code-review
+mcp_servers: []
+permissions:
+  - review_work
+  - veto_review
+forbidden_actions: []

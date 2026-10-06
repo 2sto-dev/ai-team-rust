@@ -829,7 +829,28 @@ Continut planificat initial:
 - approval gates;
 - contorizare tokeni/cost in model gateway.
 
-### Faza 5 - subagenti
+### Faza 5 - subagenti (5a REALIZATA; 5b - Worker Gateway Python - amanata)
+
+Realizat in `ai-team-rust` (5a):
+
+- delegare controlata: Builder-ul cu `delegate_subtasks` imparte fiecare iteratie in subtaskuri
+  pentru subagentii lui (maximum 4), fiecare cu fisierele pe care le detine; control plane-ul
+  valideaza impartirea (doar echipa lui, fisiere disjuncte), subagentul primeste doar contextul
+  subtaskului, iar fisierele scrise in afara listei sunt aruncate; un nivel de delegare;
+- consilierii Reviewer-ului: review-uri consultative; Security cu `veto_review` - respingerea lui nu
+  poate fi anulata de Reviewer (si un consilier cu veto care nu raspunde conteaza ca respingere);
+- skill-uri: pachete de instructiuni (`company/skills/<id>/SKILL.md`) adaugate la fisa postului;
+- servere MCP: catalog al Owner-ului (`company/mcp.yaml`), unelte oferite modelului prin tool
+  calling (Ollama, OpenAI, Claude), fiecare apel auditat; subagentul nu poate avea un server pe care
+  managerul nu-l are; server livrat: `pydoc` (documentatie Python, local, read-only);
+- subagenti angajati prin procedura obisnuita: EMP-PY-001, EMP-QA-001 (sub Builder), EMP-SEC-001
+  (sub Reviewer, cu veto).
+
+Ramas (5b): Worker Gateway si protocol Rust-Python pentru subagenti Python (ML, RAG, voce) - cand
+apare o nevoie concreta; delegare si pentru Architect.
+
+Continut planificat initial:
+
 
 - Worker Gateway;
 - protocol Rust-Python;
