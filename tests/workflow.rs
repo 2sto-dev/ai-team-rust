@@ -559,7 +559,7 @@ async fn planner_sees_candidates_and_fails_closed() {
     let planner = Planner::new("EMP-PLAN-001", "sys", Arc::new(scripted.clone()));
 
     let plan = planner
-        .propose(&project(3), "Build it", &candidates, None)
+        .propose(&project(3), "Build it", &candidates, &[], None)
         .await
         .unwrap()
         .unwrap();
@@ -567,7 +567,7 @@ async fn planner_sees_candidates_and_fails_closed() {
     assert!(scripted.prompts()[0].contains("- EMP-REV-001 | reviewer"));
 
     let invalid = planner
-        .propose(&project(3), "Build it", &candidates, None)
+        .propose(&project(3), "Build it", &candidates, &[], None)
         .await
         .expect("model reachable")
         .expect_err("prose is not a plan");

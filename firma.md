@@ -893,14 +893,21 @@ Realizat:
 - **bugete:** limita de tokeni si/sau USD pe proiect (`project configure --budget-tokens /
   --budget-usd`), verificata inainte de fiecare task; un task pornit se termina, urmatorul nu
   porneste;
+- **specialisti** (17 angajati): sub Builder - Python, Testing, Rust, Go, Django, React/TypeScript,
+  Database, IoT/MQTT, Technical Writer; sub Architect - consultantii Data Architect si
+  Integration Architect, care dau note de design inainte de fiecare specificatie (`NOT RELEVANT`
+  cand taskul nu-i priveste; Architect-ul decide); fiecare cu skill pack;
+- **propuneri de angajare de la Planner:** vede si specialistii existenti; cand un task cere o
+  competenta pe care n-o are nimeni, scrie o propunere in `company/proposals/` (competente si
+  motiv completate), pe care Owner-ul o completeaza si o aproba; rularea nu e oprita;
 - **KPI** (sectiunea 18): `kpi [--project]` - rata de finalizare, aprobare din prima, cicluri de
   corectura, escaladari, acceptari ale Owner-ului, aprobari in ciuda avertismentelor, tokeni si
   cost per task finalizat; per Builder si per Reviewer.
 
 Ramas, in ordinea propusa:
 
-- angajare de noi specialisti si departamente suplimentare (eventual delegare si pentru
-  Architect);
+- departamente suplimentare de nivel lead (ex. DevOps, Documentatie ca etapa separata) - cer o
+  etapa noua in fluxul de lucru, nu doar angajati;
 - dashboard (proiecte, taskuri, consum, KPI, audit);
 - proiecte simultane si scheduling (acum totul e secvential, cu un singur working tree per
   proiect - schimbarea cea mai mare);

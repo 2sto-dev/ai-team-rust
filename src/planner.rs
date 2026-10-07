@@ -28,6 +28,44 @@ pub struct Plan {
     pub team: TeamAssignment,
     #[serde(default)]
     pub rationale: String,
+    /// A specialist the task needs and nobody on staff covers. Only a suggestion: the control
+    /// plane turns it into a hiring proposal the Owner completes and approves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hire: Option<HireSuggestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HireSuggestion {
+    pub title: String,
+    /// The lead the specialist would report to.
+    pub manager: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// The specialists already on staff (subagents), one line each, for the Planner's view of
+/// the company. Deliberately not in the `- EMP-... | function |` candidate format: they are
+/// not choosable as leads.
+pub fn staff(registry: &Registry) -> Vec<String> {
+    let mut lines: Vec<String> = registry
+        .employees()
+        .filter(|employee| {
+            employee.is_active() && employee.contract.function == EmployeeFunction::Specialist
+        })
+        .map(|employee| {
+            format!(
+                "* {} (under {}): {} - skills: {}",
+                employee.id(),
+                employee.contract.manager_id,
+                employee.contract.title,
+                employee.contract.skills.join(", ")
+            )
+        })
+        .collect();
+    lines.sort();
+    lines
 }
 
 /// Active department leads the Planner may choose from, ordered by `employee_id`.
@@ -86,6 +124,7 @@ impl Planner {
         project: &ProjectConfig,
         task: &str,
         candidates: &[Candidate],
+        staff: &[String],
         rejection: Option<&str>,
     ) -> Result<Result<Plan, String>> {
         let roster = candidates
@@ -111,13 +150,26 @@ TASK:
 CANDIDATES (employee_id | function | title | skills):
 {roster}
 
+SPECIALISTS ALREADY ON STAFF (they work under their lead; not choosable above):
+{staff}
+
 Choose exactly one architect, one builder and one reviewer from the candidates above, matching
 their skills to the task. Copy each employee_id exactly as written in the list.
 
 Return ONLY valid JSON:
 {{"team":{{"architect":"EMP-...","builder":"EMP-...","reviewer":"EMP-..."}},"rationale":"why this team"}}
+
+Only if the task clearly needs expertise that no lead and no specialist above has, add a hiring
+suggestion to the same JSON object (the Owner decides; the run goes on with the chosen team):
+"hire":{{"title":"Elixir Developer","manager":"EMP-...","skills":["elixir","otp"],"reason":"why"}}
+The manager is the lead the new specialist would work under. Leave "hire" out otherwise.
 "#,
             context = project_context(project),
+            staff = if staff.is_empty() {
+                "- none".to_string()
+            } else {
+                staff.join("\n")
+            },
         );
         if let Some(rejection) = rejection {
             prompt.push_str(&format!(

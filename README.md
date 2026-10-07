@@ -495,6 +495,32 @@ cargo run -- kpi --project tva
   Reviewer-ului), aprobări date în ciuda avertismentelor platformei, tokeni/cost per task
   finalizat; plus un tabel per Builder și per Reviewer.
 
+## Specialiști și propuneri de angajare (Faza 6)
+
+```text
+EMP-ARCH-001  Architect
+  ├─ EMP-DATA-001   Data Architect          (consultant: modele de date, stocare, migrări)
+  └─ EMP-INTEG-001  Integration Architect   (consultant: API-uri, topicuri MQTT, contracte)
+EMP-BUILD-001 Builder
+  ├─ EMP-PY-001 Python · EMP-QA-001 Testing · EMP-RUST-001 Rust · EMP-GO-001 Go
+  ├─ EMP-DJANGO-001 Django/DRF · EMP-REACT-001 React/TypeScript
+  └─ EMP-DB-001 Database · EMP-IOT-001 IoT/MQTT · EMP-DOC-001 Technical Writer
+EMP-REV-001   Reviewer
+  └─ EMP-SEC-001    Security (veto)
+```
+
+- Fiecare specialist are contract, fișa postului și un skill pack (`company/skills/`).
+- **Consultanții Arhitectului** dau note de design înainte de fiecare specificație; cine nu are
+  legătură cu task-ul răspunde `NOT RELEVANT` și e lăsat deoparte. Arhitectul decide ce intră în
+  specificație. Un consultant care nu răspunde nu oprește task-ul.
+- **Builder-ul** alege, la fiecare iterație, ce specialiști lucrează (maximum 4, fișiere
+  disjuncte) — într-un test real, la un pachet Python cu SQLite, a ales Python + Testing.
+- **Planner-ul propune angajări:** vede și specialiștii existenți; dacă un task cere o
+  competență pe care n-o are nimeni, scrie o propunere în `company/proposals/<ID>/` (cu
+  competențele și motivul completate). Rularea continuă cu echipa aleasă. Tu completezi
+  responsabilitățile, apoi `ai-team hire check <ID>` și `ai-team hire approve <ID>`. O propunere
+  care așteaptă nu e scrisă de două ori.
+
 ## Reutilizare la alt proiect
 
 Nu modifici codul Rust: creezi `projects\proiect-nou.json` și rulezi `run --project` cu el.

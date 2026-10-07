@@ -573,3 +573,117 @@ async fn security_veto_cannot_be_overruled() {
     );
     assert!(env.audit().iter().any(|e| e["event"] == "VETO_APPLIED"));
 }
+
+#[tokio::test]
+async fn architect_consultants_advise_before_the_specification() {
+    let env = env();
+    add_subagent(
+        &env.company,
+        "EMP-DATA-001",
+        "EMP-ARCH-001",
+        &["write_specification"],
+        "test-data",
+    );
+    add_subagent(
+        &env.company,
+        "EMP-INTEG-001",
+        "EMP-ARCH-001",
+        &["write_specification"],
+        "test-integ",
+    );
+    let data = ScriptedProvider::new([
+        "Store orders in one table keyed by (tenant_id, id).",
+        "Store orders in one table keyed by (tenant_id, id).",
+    ]);
+    let integration = ScriptedProvider::new(["NOT RELEVANT", "Not relevant."]);
+    let architect = ScriptedProvider::new([
+        "Specification: orders table.",
+        "Specification: orders table, revised.",
+    ]);
+    env.planned(2).await;
+
+    let orchestrator = env.orchestrator(providers_with(vec![
+        ("test-data", data.clone()),
+        ("test-integ", integration.clone()),
+        ("test-architect", architect.clone()),
+    ]));
+    ProjectManager::new(&env.store, &orchestrator)
+        .run("app", Some(1))
+        .await
+        .unwrap();
+
+    let prompt = &architect.prompts()[0];
+    assert!(
+        prompt.contains("NOTES FROM YOUR DESIGN CONSULTANTS"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("### EMP-DATA-001\nStore orders in one table"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("EMP-INTEG-001"), "{prompt}");
+    // Consultants see the task, not the Architect's or Builder's work.
+    assert!(data.prompts()[0].contains("Give your design notes for your domain only"));
+    let outcomes: Vec<String> = env
+        .audit()
+        .iter()
+        .filter(|event| event["event"] == "CONSULTATION_DONE")
+        .map(|event| {
+            event["payload"]["outcome"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert!(outcomes.contains(&"notes".to_string()), "{outcomes:?}");
+    assert!(
+        outcomes.contains(&"not relevant".to_string()),
+        "{outcomes:?}"
+    );
+}
+
+#[tokio::test]
+async fn planner_hiring_suggestions_become_owner_proposals() {
+    let env = env();
+    env.planned(2).await;
+    let team =
+        r#""team":{"architect":"EMP-ARCH-001","builder":"EMP-BUILD-001","reviewer":"EMP-REV-001"}"#;
+    let suggestion = format!(
+        r#"{{{team},"rationale":"usual team","hire":{{"title":"Elixir Developer","manager":"EMP-BUILD-001","skills":["elixir","otp"],"reason":"the task is in Elixir"}}}}"#
+    );
+    let planner = ScriptedProvider::new([suggestion.clone(), suggestion]);
+    let orchestrator = env.orchestrator(providers_with(vec![("test-planner", planner)]));
+    let summary = ProjectManager::new(&env.store, &orchestrator)
+        .run("app", Some(2))
+        .await
+        .unwrap();
+
+    // The run goes on with the chosen team.
+    assert_eq!(summary.executed.len(), 2);
+    let proposal = env.company.join("proposals/EMP-ELIXIR-001");
+    let contract = fs::read_to_string(proposal.join("contract.yaml")).unwrap();
+    assert!(contract.contains("manager_id: EMP-BUILD-001"), "{contract}");
+    assert!(contract.contains("  - elixir\n  - otp\n"), "{contract}");
+    let job = fs::read_to_string(proposal.join("job_description.md")).unwrap();
+    assert!(
+        job.contains("suggested by the Planner: the task is in Elixir"),
+        "{job}"
+    );
+    // Nothing is hired without the Owner, and a pending proposal is not written twice.
+    assert!(!env.company.join("employees/EMP-ELIXIR-001").exists());
+    assert!(!env.company.join("proposals/EMP-ELIXIR-002").exists());
+    let state = env.store.load_task_state("app-T01").unwrap().unwrap();
+    assert!(
+        state
+            .history
+            .iter()
+            .any(|line| line.contains("suggests hiring Elixir Developer (EMP-ELIXIR-001)"))
+    );
+    let events: Vec<_> = env
+        .audit()
+        .into_iter()
+        .map(|e| e["event"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(events.contains(&"HIRE_SUGGESTED".to_string()));
+    assert!(events.contains(&"HIRE_SUGGESTION_IGNORED".to_string()));
+}

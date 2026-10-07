@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 and 5a are implemented, and phase 6 is in progress (stabilization, budgets, KPIs done). Phase 5a covers subagents, skill packs, MCP and the veto. Phase 5b (a Python Worker Gateway) is deliberately on hold until a specialist needs more than MCP tool calls: long runs, state kept between tasks, progress streaming or another machine. Until then, connect Python specialists as MCP servers (see `firma.md`, phase 5). The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
+`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 and 5a are implemented, and phase 6 is in progress (stabilization, budgets, KPIs, specialists and hiring suggestions done). Phase 5a covers subagents, skill packs, MCP and the veto. Phase 5b (a Python Worker Gateway) is deliberately on hold until a specialist needs more than MCP tool calls: long runs, state kept between tasks, progress streaming or another machine. Until then, connect Python specialists as MCP servers (see `firma.md`, phase 5). The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
 
 ## Commands
 
@@ -120,7 +120,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - Each iteration it asks for a split (`DELEGATION_HEADING`), which `validate_delegation` checks: team members only, at most 4 subtasks, disjoint file ownership.
     - A rejected split is retried once, then the lead works solo.
     - Each `Specialist` gets only its subtask and files. Files outside a subtask are dropped and recorded in `SUBTASK_DONE`.
+  - **Architect consultants (phase 6).** Architect subagents with `write_specification` are `Specialist` consultants (`Architect::with_consultants`, built in `staffing::build_team` when the Architect has `delegate_subtasks`). Before every specification or revision, each one gets the task, the project context and the existing files, and returns design notes or exactly `NOT RELEVANT` (`architect::NOT_RELEVANT`, dropped). Notes go into the Architect prompt as advice. A failing consultant is audited (`CONSULTATION_DONE` with `failed: ...`) and never fails the task.
+  - **Hiring suggestions (phase 6).** The Planner's team prompt lists the specialists on staff (`planner::staff`, `* EMP-... (under ...)` lines, deliberately not in the candidate format). `Plan.hire` (`HireSuggestion`) is optional. `orchestrator::suggest_hire` turns it into a `propose_hire` proposal with skills and reason filled in, and records `HIRE_SUGGESTED` plus a history line. It ignores (`HIRE_SUGGESTION_IGNORED`) a manager that cannot delegate, or a pending `EMP-<SLUG>-001` proposal. It never blocks the run and never hires: the Owner approves.
   - **Reviewer advisors.** Reviewer subagents with `review_work` advise as `Advisor`. A `veto_review` advisor's `CHANGES_REQUIRED` overrides the Reviewer (`VETO_APPLIED`). A failing or invalid veto advisor counts as a rejection (fail closed).
+  - **Shipped staff (17 employees).** Builder specialists are Python, Testing, Rust, Go, Django, React/TypeScript, Database, IoT/MQTT and Technical Writer. Architect consultants are Data and Integration. The Reviewer advisor is Security, with veto. Each has a skill pack in `company/skills/`. Consultants use `num_predict` 2048.
   - **Validation rules.** The registry rejects unknown skill packs or servers, a subagent with servers its manager lacks, `veto_review` outside a reviewer's subagent, and duplicate entries. `Role::Specialist` meters subagent calls.
 
 ## Tests
@@ -135,6 +138,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - MCP and tool calling, against the shipped `pydoc` server (needs `python`) and an Ollama-shaped HTTP fake;
 - delegation with dropped out-of-scope files;
 - solo fallback after an invalid split;
-- the veto.
+- the veto;
+- Architect consultants (notes in, `NOT RELEVANT` out);
+- Planner hiring suggestions becoming proposals, written once.
 
 `TestLlm` answers delegation requests (one `work/<id>.txt` per team member), plays Specialist (writes its owned files, or approves when acting as an advisor) and reports fake usage. `tests/execution.rs` covers phase 4: the gates, path safety, per-iteration commits and their authors, git merge conflicts, deletions, pushes (to a local bare repo), capabilities and metering. The git tests need `git` on `PATH`. Its test commands are cross-platform shell one-liners. `TestLlm`'s Builder writes `notes/result.md`, and it reports fake usage. `tests/projects.rs` covers phase 3 end to end with `TestLlm`, whose Planner also answers task-plan prompts with `test_task_plan()`: T1 → T2 → T3 across 2 milestones. Interrupted runs are simulated by saving a mid-run `TeamState` with `save_task_state`. `shipped_registry_is_valid_and_ready` keeps `company/employees` valid. Prefer `ScriptedProvider` over `TestLlm` when asserting on prompt contents.

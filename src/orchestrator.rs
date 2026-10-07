@@ -12,8 +12,8 @@ use crate::{
         ReviewTarget, Role, Stage, TeamAssignment, TeamState, WorkOrder,
     },
     llm::{LlmProvider, ProviderFactory, UsageLedger, UsageTotals, http_providers, metered},
-    planner::{Planner, candidates},
-    registry::{EmployeeFunction, Registry},
+    planner::{HireSuggestion, Planner, candidates, staff},
+    registry::{Capability, EmployeeFunction, HireRequest, Registry, propose_hire},
     staffing::{self, Team, model_of},
     workbench::Workbench,
 };
@@ -453,11 +453,18 @@ impl Orchestrator {
         )?;
 
         let candidates = candidates(registry);
+        let staff = staff(registry);
         let mut rejection: Option<String> = None;
 
         for attempt in 1..=MAX_PLAN_ATTEMPTS {
             let proposal = planner
-                .propose(project, &state.task, &candidates, rejection.as_deref())
+                .propose(
+                    project,
+                    &state.task,
+                    &candidates,
+                    &staff,
+                    rejection.as_deref(),
+                )
                 .await
                 .context("Planner failed")?;
 
@@ -469,7 +476,12 @@ impl Orchestrator {
                         plan.team.architect, plan.team.builder, plan.team.reviewer
                     ));
                     match staffing::validate_assignment(registry, &plan.team) {
-                        Ok(()) => return Ok(plan.team),
+                        Ok(()) => {
+                            if let Some(hire) = &plan.hire {
+                                suggest_hire(&ctx, registry, hire, state)?;
+                            }
+                            return Ok(plan.team);
+                        }
                         Err(err) => {
                             let error = format!("{err:#}");
                             ctx.record(
@@ -626,6 +638,117 @@ impl Orchestrator {
             .with_context(|| format!("{} failed", agent.role()))?;
         Ok((ctx, output))
     }
+}
+
+/// Turns the Planner's hiring suggestion into a proposal in `company/proposals/<ID>/` for
+/// the Owner (`hire check` / `hire approve`). It never blocks or fails the run: an unusable
+/// suggestion is audited and dropped, and a pending proposal for the same role is not
+/// written twice.
+fn suggest_hire(
+    ctx: &AgentContext,
+    registry: &Registry,
+    hire: &HireSuggestion,
+    state: &mut TeamState,
+) -> Result<()> {
+    let ignore = |reason: String| {
+        ctx.record(
+            "HIRE_SUGGESTION_IGNORED",
+            &json!({ "suggestion": hire, "reason": reason }),
+        )
+    };
+    let manager = match registry.get(&hire.manager) {
+        Some(manager) if manager.is_active() && manager.has(Capability::DelegateSubtasks) => {
+            manager
+        }
+        _ => {
+            return ignore(format!(
+                "{} is not an active lead that can delegate",
+                hire.manager
+            ));
+        }
+    };
+    let slug: String = hire
+        .title
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if slug.is_empty() {
+        return ignore("the title has no usable name".to_string());
+    }
+    let proposals = registry.company_dir().join("proposals");
+    let base = format!("EMP-{slug}-001");
+    if proposals.join(&base).exists() {
+        return ignore(format!(
+            "a proposal for {base} is already waiting for the Owner"
+        ));
+    }
+    let employee_id = (1..100)
+        .map(|n| format!("EMP-{slug}-{n:03}"))
+        .find(|id| registry.get(id).is_none() && !proposals.join(id).exists())
+        .context("no free employee id")?;
+
+    let request = HireRequest {
+        employee_id: employee_id.clone(),
+        name: hire.title.clone(),
+        function: EmployeeFunction::Specialist,
+        manager_id: manager.id().to_string(),
+        title: None,
+        department: None,
+    };
+    let dir = match propose_hire(registry.company_dir(), &request) {
+        Ok(dir) => dir,
+        Err(err) => return ignore(format!("{err:#}")),
+    };
+    // Fill in what the Planner knows; responsibilities and deliverables stay for the Owner.
+    if !hire.skills.is_empty() {
+        let contract = dir.join("contract.yaml");
+        let skills: String = hire
+            .skills
+            .iter()
+            .map(|skill| format!("  - {skill}\n"))
+            .collect();
+        let text = std::fs::read_to_string(&contract)?
+            .replace("skills:\n  - TODO\n", &format!("skills:\n{skills}"));
+        std::fs::write(&contract, text)?;
+    }
+    let job = dir.join("job_description.md");
+    let mut text = std::fs::read_to_string(&job)?;
+    if !hire.reason.trim().is_empty() {
+        text = text.replacen(
+            "## Purpose\nTODO",
+            &format!(
+                "## Purpose\nTODO (suggested by the Planner: {})",
+                hire.reason.trim()
+            ),
+            1,
+        );
+    }
+    if !hire.skills.is_empty() {
+        text = text.replacen(
+            "## Skills\n- TODO",
+            &format!("## Skills\n- {}", hire.skills.join("\n- ")),
+            1,
+        );
+    }
+    std::fs::write(&job, text)?;
+
+    ctx.record(
+        "HIRE_SUGGESTED",
+        &json!({ "employee_id": employee_id, "suggestion": hire, "proposal": dir }),
+    )?;
+    state.history.push(format!(
+        "planner: suggests hiring {} ({employee_id}) under {}; proposal in {} - complete it, then \
+         `ai-team hire check {employee_id}` and `ai-team hire approve {employee_id}`",
+        hire.title,
+        manager.id(),
+        dir.display()
+    ));
+    Ok(())
 }
 
 fn work_order(project: &ProjectConfig, state: &TeamState) -> WorkOrder {

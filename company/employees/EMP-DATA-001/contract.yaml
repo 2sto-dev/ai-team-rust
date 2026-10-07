@@ -1,0 +1,32 @@
+# Operational contract for EMP-DATA-001 (hired in phase 6)
+employee_id: EMP-DATA-001
+name: "Data Architect"
+title: "Data Architect"
+department: "architecture"
+manager_id: EMP-ARCH-001
+employee_type: subagent
+function: specialist
+status: active
+model:
+  provider: ollama
+  model: qwen3-coder:30b
+  base_url: http://10.10.0.14:11434
+  temperature: 0.1
+  num_ctx: 32768
+  num_predict: 2048
+  timeout_secs: 180
+  max_retries: 2
+  retry_backoff_ms: 1000
+skills:
+  - data modeling
+  - schemas
+  - storage choice
+  - migrations strategy
+  - multi-tenancy
+# Skill packs from company/skills/<id>/ and MCP servers from company/mcp.yaml:
+skill_packs:
+  - data-architecture
+mcp_servers: []
+permissions:
+  - write_specification
+forbidden_actions: []

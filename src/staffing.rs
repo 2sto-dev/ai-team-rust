@@ -167,6 +167,17 @@ pub fn build_team(
         Vec::new()
     };
 
+    let consultants: Vec<Specialist> = if architect.has(Capability::DelegateSubtasks) {
+        registry
+            .active_subagents_of(architect.id())
+            .into_iter()
+            .filter(|subagent| subagent.has(Capability::WriteSpecification))
+            .map(specialist)
+            .collect::<Result<_>>()?
+    } else {
+        Vec::new()
+    };
+
     Ok(Team {
         architect: Box::new(
             Architect::new(
@@ -174,7 +185,8 @@ pub fn build_team(
                 registry.system_prompt(architect),
                 providers(Role::Architect, model_of(architect)?)?,
             )
-            .with_toolbox(registry.toolbox_for(architect)),
+            .with_toolbox(registry.toolbox_for(architect))
+            .with_consultants(consultants),
         ),
         builder: builder_agent,
         reviewer: Box::new(
