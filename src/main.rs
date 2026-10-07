@@ -243,6 +243,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let employees_dir = cli.company.join("employees");
+    refuse_inside_workspace(&cli.data)?;
 
     match cli.command {
         Commands::Doctor { offline } => doctor(&employees_dir, offline).await,
@@ -1044,6 +1045,9 @@ async fn owner_request(
             id
         }
         None => {
+            if test_command.is_none() {
+                println!("{NO_TESTS_WARNING}");
+            }
             let id = match new_project_name {
                 Some(name) => {
                     let id = normalize_project_name(&name)?;
@@ -1205,6 +1209,43 @@ fn read_line(prompt: &str) -> Result<Option<String>> {
     Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
 }
 
+/// Suggested in the console for a new project; the shipped team writes Python.
+const DEFAULT_TEST_COMMAND: &str = "python -m unittest discover -s tests -v";
+const NO_TESTS_WARNING: &str = "ATENTIE: fara comanda de test platforma nu ruleaza nimic; Reviewer-ul \
+aproba doar citind codul, iar o regresie poate trece. Seteaz-o oricand cu: \
+ai-team project configure <id> --test-command \"...\"";
+
+/// Running the CLI from inside a project's repository would create a stray `data/` there,
+/// which the platform then commits as leftover work. Refuse, and say where to run from.
+fn refuse_inside_workspace(data_dir: &Path) -> Result<()> {
+    if data_dir.is_absolute() {
+        return Ok(());
+    }
+    let cwd = std::env::current_dir()?;
+    for dir in cwd.ancestors() {
+        let Some(workspaces) = dir.parent() else {
+            break;
+        };
+        if workspaces
+            .file_name()
+            .is_some_and(|name| name == "workspaces")
+            && dir.join(".git").exists()
+            && let Some(data) = workspaces.parent()
+            && data.join("ai-team.db").is_file()
+        {
+            let root = data.parent().unwrap_or(data);
+            anyhow::bail!(
+                "you are inside the repository of project {} ({}); running ai-team here would \
+                 create a stray data/ folder in it. Run it from {} instead.",
+                dir.file_name().unwrap_or_default().to_string_lossy(),
+                cwd.display(),
+                root.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Answers a question about the current project in the console (read-only).
 async fn console_ask(manager: &ProjectManager<'_>, project: Option<&str>, question: &str) {
     let Some(project_id) = project else {
@@ -1361,8 +1402,15 @@ async fn owner_console(
         }
 
         let test_command = if current.is_none() {
-            read_line("Comanda de test (Enter = fara teste): ")?
-                .filter(|command| !command.trim().is_empty())
+            let answer = read_line(&format!(
+                "Comanda de test [{DEFAULT_TEST_COMMAND}] (Enter = aceasta, '-' = fara teste): "
+            ))?
+            .unwrap_or_default();
+            match answer.trim() {
+                "" => Some(DEFAULT_TEST_COMMAND.to_string()),
+                "-" => None,
+                command => Some(command.to_string()),
+            }
         } else {
             None
         };

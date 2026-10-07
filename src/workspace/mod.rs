@@ -239,6 +239,39 @@ fn list_files(root: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Test files by common conventions (tests/ folders, test_*.py, *_test.go, *.test.ts, ...).
+fn is_test_path(path: &str) -> bool {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let name = parts.pop().unwrap_or("").to_ascii_lowercase();
+    parts
+        .iter()
+        .any(|dir| matches!(*dir, "tests" | "test" | "__tests__" | "spec"))
+        || name.starts_with("test_")
+        || ["_test.", ".test.", ".spec."]
+            .iter()
+            .any(|marker| name.contains(marker) && !name.starts_with(marker))
+}
+
+/// Test cases in a file, by the definitions common frameworks use.
+fn count_test_cases(source: &str) -> usize {
+    const MARKERS: [&str; 9] = [
+        "def test",
+        "async def test",
+        "#[test]",
+        "#[tokio::test]",
+        "func Test",
+        "it(",
+        "test(",
+        "@Test",
+        "it.each",
+    ];
+    source
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| MARKERS.iter().any(|marker| line.starts_with(marker)))
+        .count()
+}
+
 pub fn task_branch(task_id: &str) -> String {
     format!("task/{task_id}")
 }
@@ -454,6 +487,42 @@ impl Workspace {
 
     pub fn files(&self) -> Result<Vec<String>> {
         list_files(&self.root)
+    }
+
+    /// Whether the working tree differs from `main`, i.e. the task changed anything at all.
+    pub fn differs_from_main(&self) -> Result<bool> {
+        let output = self.run(&["diff", "--quiet", MAIN_BRANCH, "--"])?;
+        match output.status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            _ => bail!(
+                "git diff failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        }
+    }
+
+    /// Tests approved on `main` that the working tree lost: removed test files, and test
+    /// files with fewer test cases than before. A rewrite that quietly drops tests is how a
+    /// follow-up task regressed approved work in a real run.
+    pub fn test_regressions(&self) -> Result<Vec<String>> {
+        let listing = self.git(&["ls-tree", "-r", "--name-only", MAIN_BRANCH])?;
+        let mut findings = Vec::new();
+        for path in listing.lines().filter(|path| is_test_path(path)) {
+            let current = self.root.join(path);
+            if !current.is_file() {
+                findings.push(format!("test file {path} was removed"));
+                continue;
+            }
+            let before = count_test_cases(&self.git(&["show", &format!("{MAIN_BRANCH}:{path}")])?);
+            let after = count_test_cases(&fs::read_to_string(&current).unwrap_or_default());
+            if after < before {
+                findings.push(format!(
+                    "{path} has {after} test case(s), main had {before}"
+                ));
+            }
+        }
+        Ok(findings)
     }
 
     /// Writes validated files; returns the paths written and the problems found. Nothing
@@ -700,6 +769,70 @@ mod tests {
         assert_eq!(validate_path("src\\lib.rs").unwrap(), "src/lib.rs");
         // A file merely named like a skipped directory is fine.
         assert_eq!(validate_path("docs/build").unwrap(), "docs/build");
+    }
+
+    #[test]
+    fn recognises_test_files_and_counts_their_cases() {
+        for path in [
+            "tests/test_a.py",
+            "test_a.py",
+            "pkg/a_test.go",
+            "src/a.test.ts",
+            "tests/data.json",
+        ] {
+            assert!(is_test_path(path), "{path}");
+        }
+        for path in ["ulise.py", "src/lib.rs", "contest.py", "docs/testing.md"] {
+            assert!(!is_test_path(path), "{path}");
+        }
+        let python = "class T:\n    def test_a(self):\n        pass\n    def test_b(self):\n        pass\n    def helper(self):\n        pass\n";
+        assert_eq!(count_test_cases(python), 2);
+        assert_eq!(
+            count_test_cases("#[test]\nfn a() {}\n#[tokio::test]\nasync fn b() {}"),
+            2
+        );
+    }
+
+    #[test]
+    fn dropped_tests_are_reported_against_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        fs::create_dir_all(dir.path().join("tests")).unwrap();
+        fs::write(
+            dir.path().join("tests/test_a.py"),
+            "def test_one():\n    pass\ndef test_two():\n    pass\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("tests/test_b.py"),
+            "def test_b():\n    pass\n",
+        )
+        .unwrap();
+        workspace
+            .commit_paths(
+                &["tests/test_a.py".to_string(), "tests/test_b.py".to_string()],
+                "EMP-BUILD-001",
+                "tests",
+            )
+            .unwrap();
+        assert!(workspace.test_regressions().unwrap().is_empty());
+        assert!(!workspace.differs_from_main().unwrap());
+
+        fs::write(
+            dir.path().join("tests/test_a.py"),
+            "def test_one():\n    pass\n",
+        )
+        .unwrap();
+        fs::remove_file(dir.path().join("tests/test_b.py")).unwrap();
+        assert!(workspace.differs_from_main().unwrap());
+        let findings = workspace.test_regressions().unwrap();
+        assert_eq!(
+            findings,
+            [
+                "tests/test_a.py has 1 test case(s), main had 2",
+                "test file tests/test_b.py was removed"
+            ]
+        );
     }
 
     #[test]

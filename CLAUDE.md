@@ -35,6 +35,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
       - The prompt becomes a task with `add_request`: an `"Owner requests"` milestone, no plan approval needed, and a done project reopens.
       - Then it runs the project.
       - File previews (the first 40 lines of text files) go into the project objective, so every agent sees them.
+- `main` calls `refuse_inside_workspace`: with a relative `--data`, the CLI refuses to run inside `<data>/workspaces/<project>`, because it would create a stray `data/` that `save_uncommitted` then commits. The console suggests `python -m unittest discover -s tests -v` as a new project's test command (`-` = none), and `owner_request` warns when a new project has no test command.
 - Audit locations: CLI runs write to `.ai-team/runs/<run_id>.jsonl` and HR decisions to `.ai-team/hr.jsonl`. Don't leave demo hires or status changes in the real `company/`; try them on a copy with `--company`.
 
 ## Architecture
@@ -97,6 +98,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - `merge_task` runs `git merge --no-ff` as `EMP-ORCH-001`, and `merge --abort`s on a conflict so `main` stays untouched.
     - Pushes go only to the Owner's `remote_url` (`project configure --remote`), with no force and `GIT_TERMINAL_PROMPT=0`: the task branch after every task, `main` after every merge. A failed push is reported in `RunSummary.push_errors` and task history and never changes the outcome. All git calls shell out to `git`.
   - **Answer format and limits.** The Builder answers with `### FILE: path` plus a fenced block, or with `### DELETE: path`; `extract_files` returns an `AnswerFiles`. `.gitignore` is platform-managed. `validate_path` rejects `..`, absolute paths, drive letters, `.git`, build directories (`SKIP_DIRS`) and Windows reserved names. Limits: 60 files and 256 KB per file.
+  - **Verification warnings.** `Verification.warnings` do not block the work; they reach the Reviewer through `report()` as `WARNING: ... (approve only if the task asked for this)`. Two sources:
+    - `Workspace::test_regressions`: test files on `main` (`is_test_path`) that are gone, or that have fewer cases (`count_test_cases`). A real follow-up task rewrote approved tests from 6 to 2 and nobody noticed.
+    - `differs_from_main` being false: the task changed nothing (in a real run the work was already done).
   - **Test runner.** `runner.rs` runs the Owner's `test_command` through `cmd /C` or `sh -c`, with `env_clear()` plus `ALLOWED_ENV`, so no secrets reach the tests. On timeout it kills the whole tree (`taskkill /T`) *before* dropping the shell; dropping first orphaned children (bug found in phase 4).
   - **Workflow gates.** `Workbench` (`workbench.rs`) plugs into `Orchestrator::start`/`resume`. Per iteration the order is: briefing in the Builder prompt, Builder answers, `verify` writes the files and runs the tests, the Reviewer runs only if `Verification::passed()` and sees the platform report, otherwise the Builder gets the report as feedback. The project manager merges the task branch on `DONE` and on Owner `accept`; a merge conflict means `FAILED`.
   - **Capabilities.** `write_workspace` and `run_tests` require `write_implementation`. The orchestrator checks the Builder holds what `Workbench::required_capabilities` returns.

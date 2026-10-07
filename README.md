@@ -119,7 +119,7 @@ cargo run -- console --project <id>      # continuă un proiect existent
 Fișiere pentru echipa (cale sau trage fișierul aici; Enter gol = gata):
   fisier> "C:\Users\...\nume.txt"         <- poți trage fișierul în fereastră
   fisier>
-Comanda de test (Enter = fără teste): python -m unittest discover -s tests -v
+Comanda de test [python -m unittest discover -s tests -v] (Enter = aceasta, '-' = fara teste):
 Pornesc echipa? [D/n]
   [proiect-T01] architect: specification ready     <- progresul, în timp real
   [proiect-T01] builder: iteration 1 ready
@@ -134,6 +134,12 @@ Pornesc echipa? [D/n]
 - după prima cerere rămâi în același proiect: următoarea cerere devine un task nou al lui;
 - un task oprit (teste roșii, veto) te întreabă pe loc: **[r]** reia cu o notă pentru echipă,
   **[a]** acceptă, **[c]** anulează, Enter = lasă-l așa;
+- la un proiect nou, Enter la comanda de test o alege pe cea propusă (unittest); `-` = fără
+  teste, cu avertisment: fără teste Reviewer-ul aprobă doar citind codul;
+- dacă un task pierde teste aprobate (fișier șters sau mai puține teste decât pe `main`)
+  ori nu schimbă nimic, verificarea arată un `WARNING` pe care Reviewer-ul trebuie să-l
+  confirme;
+- rulează `ai-team` din rădăcina repo-ului, nu din folderul unui proiect (platforma refuză);
 - **o cerere pornește echipa și poate schimba codul**; pentru întrebări scrie `?` în față
   (`?ce conține proiectul`): răspunde Arhitectul din fișierele proiectului, fără task și fără
   commit. O cerere care se termină cu `?` te întreabă întâi dacă e o întrebare;

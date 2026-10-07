@@ -139,6 +139,12 @@ impl Workbench for TaskWorkbench {
                 _ => None,
             };
 
+            let mut warnings = if problems.is_empty() {
+                self.workspace.test_regressions()?
+            } else {
+                Vec::new()
+            };
+
             // Every iteration is recorded, passing or not: the branch is the task's history.
             let changed: Vec<String> = files_written
                 .iter()
@@ -159,11 +165,18 @@ impl Workbench for TaskWorkbench {
                     self.task_id, implementation.revision
                 ),
             )?;
+            if problems.is_empty() && !self.workspace.differs_from_main()? {
+                warnings.push(
+                    "the task changed no files: the project already matched this answer; confirm                      the task was in fact already done"
+                        .to_string(),
+                );
+            }
 
             Ok(Verification {
                 files_written,
                 files_deleted,
                 problems,
+                warnings,
                 test,
                 commit,
             })

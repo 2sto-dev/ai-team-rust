@@ -43,6 +43,10 @@ pub struct Verification {
     #[serde(default)]
     pub files_deleted: Vec<String>,
     pub problems: Vec<String>,
+    /// Findings that do not block the work but that the Reviewer must weigh, e.g. tests that
+    /// existed on the main branch and are gone.
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub test: Option<TestRun>,
     /// The commit that recorded this iteration on the task branch.
     #[serde(default)]
@@ -75,6 +79,11 @@ impl Verification {
         }
         for problem in &self.problems {
             report.push_str(&format!("problem: {problem}\n"));
+        }
+        for warning in &self.warnings {
+            report.push_str(&format!(
+                "WARNING: {warning} (approve only if the task asked for this)\n"
+            ));
         }
         match &self.test {
             None if self.problems.is_empty() => {
