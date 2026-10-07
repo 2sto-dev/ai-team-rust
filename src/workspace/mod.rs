@@ -64,16 +64,28 @@ pub struct AnswerFiles {
     pub files: Vec<FileBlock>,
     pub deletions: Vec<String>,
     pub problems: Vec<String>,
+    /// `### EXPECTED: <path>`: files a delegating lead assigned that its specialist did not
+    /// deliver. The workbench reports those that are also absent from the workspace.
+    pub expected: Vec<String>,
 }
 
-/// Parses `### FILE: <path>` headings (each followed by one fenced code block) and
-/// `### DELETE: <path>` headings.
+/// Parses `### FILE: <path>` headings (each followed by one fenced code block),
+/// `### DELETE: <path>` headings and `### EXPECTED: <path>` notes from a delegating lead.
 pub fn extract_files(markdown: &str) -> AnswerFiles {
     let lines: Vec<&str> = markdown.lines().collect();
     let mut answer = AnswerFiles::default();
     let mut i = 0;
 
     while i < lines.len() {
+        if let Some(path) = heading(lines[i], "EXPECTED:") {
+            if let Ok(path) = validate_path(&path)
+                && !answer.expected.contains(&path)
+            {
+                answer.expected.push(path);
+            }
+            i += 1;
+            continue;
+        }
         if let Some(path) = heading(lines[i], "DELETE:") {
             if !answer.deletions.contains(&path) {
                 answer.deletions.push(path);

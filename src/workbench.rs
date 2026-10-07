@@ -12,6 +12,48 @@ use crate::{
     workspace::{Workspace, extract_files, run_tests},
 };
 
+/// Build tools that look for their manifest in parent folders, and the manifest they need.
+const MANIFEST_TOOLS: [(&str, &str); 6] = [
+    ("cargo", "Cargo.toml"),
+    ("npm", "package.json"),
+    ("npx", "package.json"),
+    ("yarn", "package.json"),
+    ("pnpm", "package.json"),
+    ("go", "go.mod"),
+];
+
+/// Cargo, npm and go walk up to the nearest manifest. Workspaces live inside the platform's
+/// folder, so a project without its own `Cargo.toml` silently ran the platform's tests in a
+/// real run, and the gate passed. A missing manifest that a parent folder has is a problem.
+fn foreign_manifest(root: &std::path::Path, command: &str) -> Option<String> {
+    let words: Vec<&str> = command
+        .split(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';' | '(' | ')'))
+        .filter(|word| !word.is_empty())
+        .collect();
+    for (tool, manifest) in MANIFEST_TOOLS {
+        let used = words.iter().any(|word| {
+            let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+            name.eq_ignore_ascii_case(tool)
+                || name.eq_ignore_ascii_case(&format!("{tool}.exe"))
+                || name.eq_ignore_ascii_case(&format!("{tool}.cmd"))
+        });
+        if !used || root.join(manifest).is_file() {
+            continue;
+        }
+        if let Some(parent) = root
+            .ancestors()
+            .skip(1)
+            .find(|dir| dir.join(manifest).is_file())
+        {
+            return Some(format!(
+                "{manifest} is missing in the project root: `{command}` would use {} from a parent                  folder instead of this project. Write {manifest} at the project root.",
+                parent.join(manifest).display()
+            ));
+        }
+    }
+    None
+}
+
 /// How much workspace content the Builder and Architect see (about 20k tokens of a 64k
 /// context, leaving room for the spec, the last attempt, the review and the answer).
 const SNAPSHOT_BUDGET_CHARS: usize = 80_000;
@@ -132,6 +174,20 @@ impl Workbench for TaskWorkbench {
                 self.workspace.delete_files(&answer.deletions)?;
             problems.extend(write_problems);
             problems.extend(delete_problems);
+            for path in &answer.expected {
+                if !files_written.contains(path) && !self.workspace.root().join(path).exists() {
+                    problems.push(format!(
+                        "{path} was assigned in the work split but nobody delivered it and the \
+                         project does not have it; write {path}"
+                    ));
+                }
+            }
+
+            if let Some(command) = &self.test_command
+                && let Some(problem) = foreign_manifest(self.workspace.root(), command)
+            {
+                problems.push(problem);
+            }
 
             let test = match (&self.test_command, problems.is_empty()) {
                 (Some(command), true) => {
@@ -182,5 +238,65 @@ impl Workbench for TaskWorkbench {
                 commit,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn assigned_files_nobody_delivered_are_problems() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        std::fs::write(dir.path().join("existing.txt"), "kept from earlier work").unwrap();
+        let bench = TaskWorkbench::new(workspace, "app-T01", None, Duration::from_secs(30));
+        // What a lead writes when its specialist left out two of its owned files.
+        let answer = "### FILE: src/lib.rs
+```
+pub fn f() {}
+```
+
+                      Platform note: EMP-RUST-001 did not deliver Cargo.toml, existing.txt
+                      ### EXPECTED: Cargo.toml
+### EXPECTED: existing.txt
+";
+        let verification = bench
+            .verify(&Artifact {
+                kind: crate::domain::ArtifactKind::Implementation,
+                author: "EMP-BUILD-001".to_string(),
+                revision: 1,
+                content: answer.to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(verification.files_written, ["src/lib.rs"]);
+        assert_eq!(
+            verification.problems.len(),
+            1,
+            "{:?}",
+            verification.problems
+        );
+        assert!(verification.problems[0].starts_with("Cargo.toml was assigned"));
+        assert!(!verification.passed());
+    }
+
+    #[test]
+    fn a_manifest_found_only_in_a_parent_folder_is_a_problem() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let project = dir.path().join("data/workspaces/app");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let problem = foreign_manifest(&project, "cargo test").unwrap();
+        assert!(problem.contains("Cargo.toml is missing"), "{problem}");
+        assert!(foreign_manifest(&project, "cd . && cargo.exe test --all").is_some());
+        // Other tools, or a project with its own manifest, are fine.
+        assert!(foreign_manifest(&project, "python -m unittest discover -s tests").is_none());
+        std::fs::write(project.join("Cargo.toml"), "[package]").unwrap();
+        assert!(foreign_manifest(&project, "cargo test").is_none());
+        // No manifest anywhere: the tool's own error is clear enough.
+        assert!(foreign_manifest(&project, "npm test").is_none());
     }
 }

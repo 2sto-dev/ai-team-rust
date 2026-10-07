@@ -638,6 +638,20 @@ Fiecare apel apare în audit (`TOOL_CALL`: unealta, argumentele, dacă a fost er
 primește un mediu curățat plus doar ce permite `env`/`env_from`. Livrat: `pydoc`
 (`company/mcp/pydoc_server.py`, doar biblioteca standard Python; refuză orice nu e în ea).
 
+**`rustdocs`** — server gata făcut, [snowmead/rust-docs-mcp](https://github.com/snowmead/rust-docs-mcp)
+(MIT), pentru specialistul Rust (EMP-RUST-001, și Builder-ul care îl conduce): descarcă un crate de pe
+crates.io și îi oferă modelului documentația, semnăturile exacte și sursa (15 unelte:
+`rustdocs__cache_crate`, `rustdocs__search_items_fuzzy`, `rustdocs__get_item_details`,
+`rustdocs__get_item_source`, ...). Cache în `%USERPROFILE%\.rust-docs-mcp\cache`; după prima
+descărcare a unui crate merge offline. Instalare (o dată):
+
+```powershell
+rustup toolchain install nightly-2026-05-22 --profile minimal --component rust-docs-json
+cargo install --locked --git https://github.com/snowmead/rust-docs-mcp rust-docs-mcp
+rust-docs-mcp doctor      # verificare proprie
+cargo run -- doctor       # platforma pornește serverul și îi listează uneltele
+```
+
 **Reguli** (validate la încărcarea registrului): un skill sau server inexistent face contractul
 invalid; un subagent nu poate avea un server MCP pe care managerul lui nu-l are; `veto_review`
 doar pentru un subagent al Reviewer-ului care are și `review_work`; intrările duplicate sunt

@@ -11,3 +11,13 @@ servers:
     command: python
     args: ["mcp/pydoc_server.py"]
     timeout_secs: 20
+  rustdocs:
+    description: Rust crate documentation, signatures and source (snowmead/rust-docs-mcp; caches crates, then offline)
+    # Installed with: cargo install --locked --git https://github.com/snowmead/rust-docs-mcp rust-docs-mcp
+    # Needs the nightly toolchain it pins: rustup toolchain install nightly-2026-05-22 --profile minimal --component rust-docs-json
+    command: rust-docs-mcp
+    args: ["serve"]
+    env:
+      RUST_DOCS_MCP_TOOLCHAIN: nightly-2026-05-22
+    # Caching a crate downloads and documents it (rustdoc JSON); the first call can take minutes.
+    timeout_secs: 300

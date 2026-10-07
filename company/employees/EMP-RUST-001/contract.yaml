@@ -25,7 +25,8 @@ skills:
 # Skill packs from company/skills/<id>/ and MCP servers from company/mcp.yaml:
 skill_packs:
   - rust-cargo
-mcp_servers: []
+mcp_servers:
+  - rustdocs
 permissions:
   - write_implementation
 forbidden_actions: []

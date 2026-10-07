@@ -309,7 +309,7 @@ impl BuilderLead {
                     dropped.join(", ")
                 );
             }
-            for file in kept {
+            for file in &kept {
                 let fence = fence_for(&file.content);
                 let _ = write!(
                     content,
@@ -322,8 +322,35 @@ impl BuilderLead {
                     }
                 );
             }
-            for path in deleted {
+            for path in &deleted {
                 let _ = writeln!(content, "\n### DELETE: {path}");
+            }
+            // Owned files the specialist left out: the workbench checks whether the project
+            // already has them (a real run lost a Cargo.toml this way).
+            let delivered: Vec<String> = kept
+                .iter()
+                .filter_map(|file| validate_path(&file.path).ok())
+                .chain(deleted.iter().filter_map(|path| validate_path(path).ok()))
+                .collect();
+            let missing: Vec<&String> = subtask
+                .files
+                .iter()
+                .filter(|path| !delivered.contains(path))
+                .collect();
+            if !missing.is_empty() {
+                let _ = writeln!(
+                    content,
+                    "\nPlatform note: {} did not deliver {}",
+                    subtask.assignee,
+                    missing
+                        .iter()
+                        .map(|path| path.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                for path in missing {
+                    let _ = writeln!(content, "### EXPECTED: {path}");
+                }
             }
         }
         Ok(content)

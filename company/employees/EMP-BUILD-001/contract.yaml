@@ -22,6 +22,7 @@ skill_packs:
   - python-unittest
 mcp_servers:
   - pydoc
+  - rustdocs
 permissions:
   - write_implementation
   - delegate_subtasks

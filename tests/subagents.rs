@@ -687,3 +687,43 @@ async fn planner_hiring_suggestions_become_owner_proposals() {
     assert!(events.contains(&"HIRE_SUGGESTED".to_string()));
     assert!(events.contains(&"HIRE_SUGGESTION_IGNORED".to_string()));
 }
+
+#[tokio::test]
+async fn files_a_specialist_did_not_deliver_stop_the_iteration() {
+    let env = env();
+    add_subagent(
+        &env.company,
+        "EMP-PY-001",
+        "EMP-BUILD-001",
+        &["write_implementation"],
+        "test-py",
+    );
+    let split = r#"{"subtasks":[{"assignee":"EMP-PY-001","title":"crate","instructions":"Write Cargo.toml and src/lib.rs","files":["Cargo.toml","src/lib.rs"]}]}"#;
+    let lead = ScriptedProvider::new([split]);
+    // The specialist forgets Cargo.toml, as qwen3-coder did in a real run.
+    let specialist = ScriptedProvider::new(["### FILE: src/lib.rs\n```\npub fn f() {}\n```\n"]);
+    env.planned(1).await;
+
+    let orchestrator = env.orchestrator(providers_with(vec![
+        ("test-builder", lead),
+        ("test-py", specialist),
+    ]));
+    let summary = ProjectManager::new(&env.store, &orchestrator)
+        .run("app", Some(1))
+        .await
+        .unwrap();
+
+    assert_eq!(summary.executed[0].1, TaskStatus::HumanReviewRequired);
+    let state = env.store.load_task_state("app-T01").unwrap().unwrap();
+    let verification = state.verification.unwrap();
+    assert!(
+        verification
+            .problems
+            .iter()
+            .any(|p| p.starts_with("Cargo.toml was assigned")),
+        "{:?}",
+        verification.problems
+    );
+    // What the specialist did deliver is kept on the task branch.
+    assert_eq!(verification.files_written, ["src/lib.rs"]);
+}
