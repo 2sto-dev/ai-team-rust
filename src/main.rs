@@ -9,7 +9,7 @@ use ai_team::{
     config::{CLAUDE_DEFAULT_API_KEY_ENV, ModelConfig, ProviderKind, load_project},
     domain::ProjectConfig,
     orchestrator::Orchestrator,
-    project::{ProjectManager, ProjectStatus, Store},
+    project::{ProjectManager, ProjectSettings, ProjectStatus, Store},
     registry::{
         self, EmployeeFunction, EmployeeStatus, EmployeeType, HireRequest, OWNER, Registry,
     },
@@ -49,6 +49,12 @@ enum Commands {
     /// Interactive console: type requests, attach files, watch the team, decide on stopped tasks.
     Console {
         /// Continue an existing project instead of starting a new one.
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// KPIs of the AI employees, over all projects or one.
+    Kpi {
         #[arg(long)]
         project: Option<String>,
     },
@@ -165,6 +171,12 @@ enum ProjectAction {
         /// Git remote the platform pushes main and task branches to; "" removes it.
         #[arg(long)]
         remote: Option<String>,
+        /// Most tokens (input + output) the project may use; 0 removes the limit.
+        #[arg(long)]
+        budget_tokens: Option<u64>,
+        /// Most dollars the project may cost (needs prices in contracts); 0 removes it.
+        #[arg(long)]
+        budget_usd: Option<f64>,
     },
 }
 
@@ -254,6 +266,18 @@ async fn main() -> Result<()> {
             json,
         } => run(&employees_dir, project, task, json).await,
         Commands::Console { project } => owner_console(&employees_dir, &cli.data, project).await,
+        Commands::Kpi { project } => {
+            let store = Store::open(&cli.data)?;
+            let report = ai_team::kpi::collect(&store, project.as_deref())?;
+            println!(
+                "KPI - {}\n",
+                project
+                    .as_deref()
+                    .map_or("all projects".to_string(), |id| format!("project {id}"))
+            );
+            print!("{report}");
+            Ok(())
+        }
         Commands::Ask {
             project_id,
             question,
@@ -738,6 +762,11 @@ async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) 
             for error in &summary.push_errors {
                 println!("WARNING: {error}");
             }
+            if let Some(reason) = &summary.budget_stop {
+                println!(
+                    "BUDGET: {reason}. Raise it with: ai-team project configure {project_id} --budget-tokens N"
+                );
+            }
             println!("Project {project_id}: {}", summary.project_status);
             println!("Usage so far: {}", manager.project_usage(&project_id)?);
             print_owner_actions(&store, &project_id)?;
@@ -747,8 +776,24 @@ async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) 
             test_command,
             test_timeout,
             remote,
+            budget_tokens,
+            budget_usd,
         } => {
-            let config = manager.configure(&project_id, test_command, test_timeout, remote)?;
+            let config = manager.configure(
+                &project_id,
+                ProjectSettings {
+                    test_command,
+                    test_timeout_secs: test_timeout,
+                    remote_url: remote,
+                    budget_tokens,
+                    budget_usd,
+                },
+            )?;
+            println!(
+                "{project_id}: budget {}, used so far: {}",
+                config.budget.clone().unwrap_or_default(),
+                manager.project_usage(&project_id)?
+            );
             println!(
                 "{project_id}: remote {}",
                 config
@@ -1040,7 +1085,13 @@ async fn owner_request(
             store.project(&id)?;
             anyhow::ensure!(!plan, "--plan only works for a new project");
             if test_command.is_some() {
-                manager.configure(&id, test_command, None, None)?;
+                manager.configure(
+                    &id,
+                    ProjectSettings {
+                        test_command,
+                        ..ProjectSettings::default()
+                    },
+                )?;
             }
             id
         }
@@ -1086,6 +1137,7 @@ async fn owner_request(
                 test_command: test_command.filter(|command| !command.trim().is_empty()),
                 test_timeout_secs: 300,
                 remote_url: None,
+                budget: None,
             };
             store.add_project(&config)?;
             println!("Project {id} created.");
@@ -1165,6 +1217,11 @@ async fn owner_request(
     }
     for error in &summary.push_errors {
         println!("WARNING: {error}");
+    }
+    if let Some(reason) = &summary.budget_stop {
+        println!(
+            "BUDGET: {reason}. Raise it with: ai-team project configure <id> --budget-tokens N"
+        );
     }
 
     let repository = manager.main_workspace(&project_id);

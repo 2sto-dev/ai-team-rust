@@ -10,7 +10,7 @@ use ai_team::{
     domain::{ProjectConfig, Role},
     llm::{LlmProvider, ProviderFactory},
     orchestrator::Orchestrator,
-    project::{ProjectManager, ProjectStatus, Store, TaskStatus},
+    project::{ProjectManager, ProjectSettings, ProjectStatus, Store, TaskStatus},
     registry::Registry,
 };
 use common::{ScriptedProvider, TestLlm, edit_contract, project, sample_company, test_providers};
@@ -302,7 +302,14 @@ async fn owner_can_change_the_test_command_later() {
     let manager = ProjectManager::new(&env.store, &orchestrator);
 
     let updated = manager
-        .configure("app", Some("cargo test".to_string()), Some(120), None)
+        .configure(
+            "app",
+            ProjectSettings {
+                test_command: Some("cargo test".to_string()),
+                test_timeout_secs: Some(120),
+                ..ProjectSettings::default()
+            },
+        )
         .unwrap();
     assert_eq!(updated.test_command.as_deref(), Some("cargo test"));
     assert_eq!(
@@ -311,7 +318,13 @@ async fn owner_can_change_the_test_command_later() {
     );
 
     manager
-        .configure("app", Some(String::new()), None, None)
+        .configure(
+            "app",
+            ProjectSettings {
+                test_command: Some(String::new()),
+                ..ProjectSettings::default()
+            },
+        )
         .unwrap();
     assert_eq!(env.store.project("app").unwrap().config.test_command, None);
     let decisions = env.store.owner_decisions("app").unwrap();

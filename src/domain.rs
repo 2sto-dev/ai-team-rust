@@ -29,6 +29,59 @@ pub struct ProjectConfig {
     /// Git remote the platform pushes `main` and task branches to (Owner-chosen).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_url: Option<String>,
+    /// Owner limits on model usage; checked before each task starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<Budget>,
+}
+
+/// What a project may spend on models. It is checked before each task: a task that has
+/// started finishes (its iteration budget bounds it), and no new task starts once a limit
+/// is reached. Prices exist only when contracts set `cost_per_mtok_*`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Budget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+}
+
+impl Budget {
+    pub fn is_empty(&self) -> bool {
+        self.max_tokens.is_none() && self.max_cost_usd.is_none()
+    }
+
+    /// Why no new task may start, if a limit is reached.
+    pub fn exceeded(&self, usage: &crate::llm::UsageTotals) -> Option<String> {
+        let tokens = usage.input_tokens + usage.output_tokens;
+        if let Some(max) = self.max_tokens
+            && tokens >= max
+        {
+            return Some(format!(
+                "token budget reached: {tokens} of {max} tokens used"
+            ));
+        }
+        if let Some(max) = self.max_cost_usd
+            && usage.cost_usd >= max
+        {
+            return Some(format!(
+                "cost budget reached: ${:.4} of ${max:.4} used",
+                usage.cost_usd
+            ));
+        }
+        None
+    }
+}
+
+impl std::fmt::Display for Budget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.max_tokens, self.max_cost_usd) {
+            (None, None) => write!(f, "none"),
+            (Some(tokens), None) => write!(f, "{tokens} tokens"),
+            (None, Some(cost)) => write!(f, "${cost:.2}"),
+            (Some(tokens), Some(cost)) => write!(f, "{tokens} tokens, ${cost:.2}"),
+        }
+    }
 }
 
 fn default_test_timeout_secs() -> u64 {

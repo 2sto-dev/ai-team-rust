@@ -41,7 +41,23 @@ pub struct RunSummary {
     pub reports: Vec<PathBuf>,
     /// Pushes to the project's remote that failed (the work itself is safe locally).
     pub push_errors: Vec<String>,
+    /// Set when the project's budget stopped the run before the next task.
+    pub budget_stop: Option<String>,
     pub project_status: ProjectStatus,
+}
+
+/// Owner changes to a project's settings; `None` leaves a setting as it is.
+#[derive(Debug, Default)]
+pub struct ProjectSettings {
+    /// "" removes it.
+    pub test_command: Option<String>,
+    pub test_timeout_secs: Option<u64>,
+    /// "" removes it.
+    pub remote_url: Option<String>,
+    /// 0 removes the limit.
+    pub budget_tokens: Option<u64>,
+    /// 0 removes the limit.
+    pub budget_usd: Option<f64>,
 }
 
 pub struct ProjectManager<'a> {
@@ -104,23 +120,28 @@ impl<'a> ProjectManager<'a> {
 
     /// Owner-only settings that can change after `project add`. An empty string removes the
     /// test command or the remote.
-    pub fn configure(
-        &self,
-        project_id: &str,
-        test_command: Option<String>,
-        test_timeout_secs: Option<u64>,
-        remote_url: Option<String>,
-    ) -> Result<ProjectConfig> {
+    pub fn configure(&self, project_id: &str, settings: ProjectSettings) -> Result<ProjectConfig> {
         let mut config = self.store.project(project_id)?.config;
-        if let Some(url) = remote_url {
+        if let Some(url) = settings.remote_url {
             config.remote_url = (!url.trim().is_empty()).then(|| url.trim().to_string());
         }
-        if let Some(command) = test_command {
+        if let Some(command) = settings.test_command {
             config.test_command = (!command.trim().is_empty()).then_some(command);
         }
-        if let Some(timeout) = test_timeout_secs {
+        if let Some(timeout) = settings.test_timeout_secs {
             anyhow::ensure!(timeout > 0, "test timeout must be at least 1 second");
             config.test_timeout_secs = timeout;
+        }
+        if settings.budget_tokens.is_some() || settings.budget_usd.is_some() {
+            let mut budget = config.budget.take().unwrap_or_default();
+            if let Some(tokens) = settings.budget_tokens {
+                budget.max_tokens = (tokens > 0).then_some(tokens);
+            }
+            if let Some(cost) = settings.budget_usd {
+                anyhow::ensure!(cost >= 0.0, "the cost budget cannot be negative");
+                budget.max_cost_usd = (cost > 0.0).then_some(cost);
+            }
+            config.budget = (!budget.is_empty()).then_some(budget);
         }
         self.store.update_project_config(&config)?;
         self.store.add_owner_decision(
@@ -128,8 +149,11 @@ impl<'a> ProjectManager<'a> {
             None,
             "configure",
             Some(&format!(
-                "test_command={:?}, test_timeout_secs={}, remote_url={:?}",
-                config.test_command, config.test_timeout_secs, config.remote_url
+                "test_command={:?}, test_timeout_secs={}, remote_url={:?}, budget={}",
+                config.test_command,
+                config.test_timeout_secs,
+                config.remote_url,
+                config.budget.clone().unwrap_or_default()
             )),
         )?;
         Ok(config)
@@ -295,10 +319,17 @@ impl<'a> ProjectManager<'a> {
         let mut executed = Vec::new();
         let mut reports = Vec::new();
         let mut push_errors = Vec::new();
+        let mut budget_stop = None;
         while max_tasks.is_none_or(|max| executed.len() < max) {
             let Some(task) = self.next_task(project_id)? else {
                 break;
             };
+            if let Some(budget) = &project.config.budget
+                && let Some(reason) = budget.exceeded(&self.project_usage(project_id)?)
+            {
+                budget_stop = Some(format!("{reason}; {} not started", task.id));
+                break;
+            }
             self.store
                 .set_project_status(project_id, ProjectStatus::InProgress)?;
             let (status, errors) = self.execute(&project.config, &task).await?;
@@ -312,6 +343,7 @@ impl<'a> ProjectManager<'a> {
             executed,
             reports,
             push_errors,
+            budget_stop,
             project_status: self.update_project_status(project_id)?,
         })
     }

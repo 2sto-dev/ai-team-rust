@@ -9,7 +9,7 @@ use std::{fmt, str::FromStr};
 
 use anyhow::bail;
 
-pub use manager::{ProjectManager, RunSummary};
+pub use manager::{ProjectManager, ProjectSettings, RunSummary};
 pub use store::{MilestoneRecord, OwnerDecision, ProjectRecord, Store, TaskRecord};
 
 /// Task states (firma.md §13). Transitions are made by the control plane only.

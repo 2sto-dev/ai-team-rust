@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 and 5a are implemented. Phase 5a covers subagents, skill packs, MCP and the veto. The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
+`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 and 5a are implemented, and phase 6 is in progress (stabilization, budgets, KPIs done). Phase 5a covers subagents, skill packs, MCP and the veto. Phase 5b (a Python Worker Gateway) is deliberately on hold until a specialist needs more than MCP tool calls: long runs, state kept between tasks, progress streaming or another machine. Until then, connect Python specialists as MCP servers (see `firma.md`, phase 5). The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
 
 ## Commands
 
@@ -23,7 +23,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - `project run <id> [--max-tasks N]`, `project status <id>`
     - `task show <id>`
     - Owner decisions: `task resume <id> [--note] [--iterations N]`, `task accept <id>`, `task cancel <id>`
-    - `project configure <id> [--test-command "..."] [--test-timeout N] [--remote <url>]`
+    - `project configure <id> [--test-command "..."] [--test-timeout N] [--remote <url>] [--budget-tokens N] [--budget-usd X]` (`ProjectSettings`; 0 removes a budget limit)
+    - `kpi [--project ID]`: employee KPIs (`src/kpi.rs`, firma.md §18) from stored task states and Owner decisions.
     - `console [--project ID]` is the interactive Owner console (`owner_console` in `main.rs`).
       - You type a multi-line request (an empty line sends it), then file paths (quotes from Windows drag-and-drop are stripped) and a test command for a new project.
       - It calls `owner_request` and shows progress live (`ProjectManager::with_progress`: each new history line printed from the checkpoint).
@@ -105,6 +106,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **Workflow gates.** `Workbench` (`workbench.rs`) plugs into `Orchestrator::start`/`resume`. Per iteration the order is: briefing in the Builder prompt, Builder answers, `verify` writes the files and runs the tests, the Reviewer runs only if `Verification::passed()` and sees the platform report, otherwise the Builder gets the report as feedback. The project manager merges the task branch on `DONE` and on Owner `accept`; a merge conflict means `FAILED`.
   - **Capabilities.** `write_workspace` and `run_tests` require `write_implementation`. The orchestrator checks the Builder holds what `Workbench::required_capabilities` returns.
   - **Metering.** `LlmProvider::generate` returns a `Completion { text, usage }`; `complete` is a convenience wrapper. `from_registry_with_providers` wraps the factory with `llm::metered` into a `UsageLedger`. `Orchestrator::mark` drains the ledger into `TeamState.usage`, and planning usage is stored per project. Optional `cost_per_mtok_*` in `ModelConfig` set prices.
+  - **Budgets and KPIs (phase 6).**
+    - `ProjectConfig.budget` (`Budget { max_tokens, max_cost_usd }`) is checked in `ProjectManager::run` before each task against `project_usage`. A started task finishes; the next one is not started and `RunSummary.budget_stop` says why. Enforcement is deliberately per task, not mid-task: stopping a run halfway would leave a task FAILED for a reason that is not the team's.
+    - `kpi::collect` builds `TaskFacts` per started task (team, iterations, spec revisions, usage, Owner accept/resume/cancel, verification warnings) and aggregates them overall, per Builder and per Reviewer. An Owner accept never counts as a first-pass Reviewer approval. Unit-test new KPI rules on `KpiReport::add`.
   - **Database.** The schema is at version 2 and `Store::open` migrates version 1 in place.
 
 - **Phase 5a: subagents, skills, MCP.**

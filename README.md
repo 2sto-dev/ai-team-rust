@@ -12,8 +12,9 @@ OWNER (uman)
        └─ EMP-REV-001   Reviewer    controlul calității
 ```
 
-Subagenții Python vor fi conectați ulterior (Worker Gateway), fără să schimbăm contractele
-orchestratorului.
+Specialiștii Python se conectează azi ca servere MCP (ex. `pydoc`). Un Worker Gateway (faza 5b) se
+face doar când un specialist trebuie să ruleze ore întregi, să-și păstreze starea între task-uri,
+să trimită progres sau să ruleze pe altă mașină (GPU); condițiile sunt în `firma.md`, faza 5.
 
 ## Principii
 
@@ -476,6 +477,24 @@ apare la `project run` și în istoricul taskului.
 serverului). `project status`, `project run` și `task show` arată totalurile; costul în USD apare
 dacă pui prețurile în contract (`cost_per_mtok_input`, `cost_per_mtok_output` în blocul `model:`).
 
+## Bugete și KPI (Faza 6)
+
+```powershell
+cargo run -- project configure tva --budget-tokens 200000   # limită de tokeni (0 = fără limită)
+cargo run -- project configure tva --budget-usd 2.5         # limită în USD (cere prețuri în contracte)
+cargo run -- kpi                                            # KPI pe toate proiectele
+cargo run -- kpi --project tva
+```
+
+- **Bugetul** se verifică înainte de fiecare task: un task pornit se termină (îl limitează
+  bugetul lui de iterații), dar niciun task nou nu pornește după ce limita e atinsă.
+  `project run` / consola afișează `BUDGET: ...`; ridici limita și rulezi din nou.
+- **KPI** (secțiunea 18 din `firma.md`), calculate din task-urile salvate: rata de finalizare,
+  rata de aprobare din prima (fără corecturi și fără revizii de specificație), ciclurile medii de
+  corectură, rata de escaladare la Owner, acceptări ale Owner-ului (nu sunt aprobări ale
+  Reviewer-ului), aprobări date în ciuda avertismentelor platformei, tokeni/cost per task
+  finalizat; plus un tabel per Builder și per Reviewer.
+
 ## Reutilizare la alt proiect
 
 Nu modifici codul Rust: creezi `projects\proiect-nou.json` și rulezi `run --project` cu el.
@@ -552,5 +571,5 @@ cargo run -- hire approve EMP-PY-001
 ```
 
 Orchestratorul vorbește cu fiecare șef doar prin trait-ul `Agent` (`src/agents/mod.rs`), deci un
-șef poate fi un singur apel LLM sau o echipă — orchestratorul nu vede diferența. Subagenții Python
-prin Worker Gateway (Faza 5b) vor folosi același contract.
+șef poate fi un singur apel LLM sau o echipă — orchestratorul nu vede diferența. Un eventual Worker
+Gateway Python (faza 5b, la nevoie) ar folosi același contract.

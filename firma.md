@@ -829,7 +829,7 @@ Continut planificat initial:
 - approval gates;
 - contorizare tokeni/cost in model gateway.
 
-### Faza 5 - subagenti (5a REALIZATA; 5b - Worker Gateway Python - amanata)
+### Faza 5 - subagenti (5a REALIZATA; 5b - Worker Gateway Python - la nevoie)
 
 Realizat in `ai-team-rust` (5a):
 
@@ -846,8 +846,30 @@ Realizat in `ai-team-rust` (5a):
 - subagenti angajati prin procedura obisnuita: EMP-PY-001, EMP-QA-001 (sub Builder), EMP-SEC-001
   (sub Reviewer, cu veto).
 
-Ramas (5b): Worker Gateway si protocol Rust-Python pentru subagenti Python (ML, RAG, voce) - cand
-apare o nevoie concreta; delegare si pentru Architect.
+Ramas (5b): Worker Gateway si protocol Rust-Python pentru subagenti Python (ML, RAG, voce);
+delegare si pentru Architect.
+
+**Decizie (7 octombrie 2026): 5b nu are un loc fix in ordinea fazelor.** Se face la prima nevoie
+concreta pe care MCP nu o acopera; pana atunci firma trece la faza 6.
+
+De ce nu acum:
+
+- nu exista inca un proiect care sa ceara ML, RAG, voce sau procesare de documente;
+- MCP acopera deja specialistii Python de tip "cere - face - raspunde": un server MCP Python (ca
+  `pydoc`) e pornit de Rust, uneltele lui sunt oferite modelului, iar fiecare apel e auditat;
+- un gateway construit fara un caz real ar avea, probabil, alt protocol decat cel necesar.
+
+5b devine necesar cand un specialist Python trebuie sa faca mai mult decat sa raspunda la un apel
+de unealta:
+
+- ruleaza mult (ore), de exemplu indexarea documentelor pentru RAG sau un antrenament ML;
+- isi pastreaza starea intre taskuri (un index, un model incarcat in memorie);
+- trimite progres pe parcurs;
+- ruleaza pe alta masina (de exemplu una cu GPU).
+
+Atunci MCP pe stdio devine stramt si un Worker Gateway (protocol Rust-Python, Python Worker
+generic) isi are rostul. Delegarea pentru Architect e mica si se poate face oricand, de exemplu
+in faza 6, la angajarea de specialisti noi.
 
 Continut planificat initial:
 
@@ -859,14 +881,32 @@ Continut planificat initial:
 - delegare controlata (un nivel, context restrans, permisiuni mostenite restrictiv);
 - verdictul Security cu drept de veto in review.
 
-### Faza 6 - extindere organica
+### Faza 6 - extindere organica (in lucru)
 
-- angajare de noi specialisti;
-- departamente suplimentare;
-- proiecte simultane;
-- scheduling;
-- bugete;
-- dashboard.
+Realizat:
+
+- **stabilizare dupa testele reale:** comanda de test propusa implicit la un proiect nou (fara
+  teste, avertisment explicit); avertismente de verificare pentru Reviewer cand un task pierde
+  teste aprobate pe `main` sau nu schimba nimic; CLI-ul refuza sa ruleze din folderul unui
+  proiect; intrebarile Owner-ului (`?` in consola, `ask`) nu mai devin taskuri; Architect-ul vede
+  fisierele existente, ca taskurile noi sa construiasca peste munca aprobata;
+- **bugete:** limita de tokeni si/sau USD pe proiect (`project configure --budget-tokens /
+  --budget-usd`), verificata inainte de fiecare task; un task pornit se termina, urmatorul nu
+  porneste;
+- **KPI** (sectiunea 18): `kpi [--project]` - rata de finalizare, aprobare din prima, cicluri de
+  corectura, escaladari, acceptari ale Owner-ului, aprobari in ciuda avertismentelor, tokeni si
+  cost per task finalizat; per Builder si per Reviewer.
+
+Ramas, in ordinea propusa:
+
+- angajare de noi specialisti si departamente suplimentare (eventual delegare si pentru
+  Architect);
+- dashboard (proiecte, taskuri, consum, KPI, audit);
+- proiecte simultane si scheduling (acum totul e secvential, cu un singur working tree per
+  proiect - schimbarea cea mai mare);
+- KPI-uri care cer date noi: "Defects after approval" (flux de raportare a defectelor pe taskuri
+  inchise), "Tool failure rate" (din auditul `TOOL_CALL`), durata medie a taskurilor; bugete per
+  angajat (`budget_policy` din contract).
 
 ## 21. Regula fundamentala
 

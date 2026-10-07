@@ -2,6 +2,7 @@ pub mod agents;
 pub mod audit;
 pub mod config;
 pub mod domain;
+pub mod kpi;
 pub mod llm;
 pub mod mcp;
 pub mod orchestrator;

@@ -11,7 +11,7 @@ use ai_team::{
     llm::{Completion, LlmProvider, ProviderFactory},
     orchestrator::Orchestrator,
     planner::Planner,
-    project::{ProjectManager, ProjectStatus, Store, TaskStatus},
+    project::{ProjectManager, ProjectSettings, ProjectStatus, Store, TaskStatus},
     registry::Registry,
 };
 use anyhow::Result;
@@ -530,4 +530,43 @@ fn store_survives_reopening() {
         reopened.add_project(&project_with(2)).is_err(),
         "ids are unique"
     );
+}
+
+#[tokio::test]
+async fn budget_stops_new_tasks_and_kpis_count_the_work() {
+    let env = env();
+    planned(&env, 3).await;
+    let orchestrator = env.orchestrator(test_providers());
+    let manager = ProjectManager::new(&env.store, &orchestrator);
+    manager.run("shop", Some(1)).await.unwrap();
+    let used = manager.project_usage("shop").unwrap();
+    let used_tokens = used.input_tokens + used.output_tokens;
+    assert!(used_tokens > 0);
+
+    // A budget already spent: no new task starts, and the run says why.
+    let budget = |tokens| ProjectSettings {
+        budget_tokens: Some(tokens),
+        ..ProjectSettings::default()
+    };
+    manager.configure("shop", budget(used_tokens)).unwrap();
+    let summary = manager.run("shop", None).await.unwrap();
+    assert!(summary.executed.is_empty());
+    let reason = summary.budget_stop.unwrap();
+    assert!(
+        reason.contains("token budget reached") && reason.contains("shop-T02 not started"),
+        "{reason}"
+    );
+    assert_eq!(status_of(&env.store, "shop-T02"), TaskStatus::Planned);
+
+    // 0 removes the limit and the work continues.
+    let config = manager.configure("shop", budget(0)).unwrap();
+    assert_eq!(config.budget, None);
+    let summary = manager.run("shop", None).await.unwrap();
+    assert_eq!(summary.executed.len(), 2);
+    assert_eq!(summary.budget_stop, None);
+
+    let report = ai_team::kpi::collect(&env.store, Some("shop")).unwrap();
+    assert_eq!((report.overall.tasks, report.overall.done), (3, 3));
+    assert_eq!(report.by_builder.len(), 1);
+    assert!(report.overall.done_usage.input_tokens > 0);
 }
