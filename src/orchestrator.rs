@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use serde_json::json;
@@ -11,7 +11,7 @@ use crate::{
         AgentOutput, Artifact, ArtifactKind, ProjectConfig, ReviewDecision, ReviewResult,
         ReviewTarget, Role, Stage, TeamAssignment, TeamState, WorkOrder,
     },
-    llm::{ProviderFactory, UsageLedger, UsageTotals, http_providers, metered},
+    llm::{LlmProvider, ProviderFactory, UsageLedger, UsageTotals, http_providers, metered},
     planner::{Planner, candidates},
     registry::{EmployeeFunction, Registry},
     staffing::{self, Team, model_of},
@@ -144,6 +144,20 @@ impl Orchestrator {
     }
 
     /// The registry's planner, if the orchestrator staffs from a registry and has one.
+    /// The active Architect's model, used to answer the Owner's questions about a project.
+    pub fn consultant(&self) -> Result<Arc<dyn LlmProvider>> {
+        let Staffing::Company(company) = &self.staffing else {
+            bail!("questions need a team staffed from the registry");
+        };
+        let employee = company
+            .registry
+            .active(EmployeeFunction::Architect)
+            .into_iter()
+            .next()
+            .context("no active architect to answer questions")?;
+        (company.providers)(Role::Architect, model_of(employee)?)
+    }
+
     pub fn planner(&self) -> Option<&Planner> {
         match &self.staffing {
             Staffing::Company(company) => company.planner.as_ref(),
@@ -295,7 +309,8 @@ impl Orchestrator {
 
         // A resumed task keeps its specification unless a revision was interrupted.
         if state.specification.is_none() || state.stage == Stage::ArchitectureRevisionRequired {
-            self.specify(team, root, project, state, checkpoint).await?;
+            self.specify(team, root, project, state, checkpoint, workbench)
+                .await?;
         }
 
         while state.iteration < project.max_iterations {
@@ -396,7 +411,8 @@ impl Orchestrator {
                         .push("reviewer: CHANGES_REQUIRED (architecture)".to_string());
                     state.architecture_revisions += 1;
                     self.mark(root, "ARCHITECTURE_REVISION_REQUIRED", state, checkpoint)?;
-                    self.specify(team, root, project, state, checkpoint).await?;
+                    self.specify(team, root, project, state, checkpoint, workbench)
+                        .await?;
                 }
                 (ReviewDecision::ChangesRequired, target) => {
                     state.stage = Stage::ChangesRequired;
@@ -568,10 +584,13 @@ impl Orchestrator {
         project: &ProjectConfig,
         state: &mut TeamState,
         checkpoint: Checkpoint<'_>,
+        workbench: Option<&dyn Workbench>,
     ) -> Result<()> {
-        let (ctx, output) = self
-            .invoke(team.architect.as_ref(), root, &work_order(project, state))
-            .await?;
+        let mut order = work_order(project, state);
+        if let Some(workbench) = workbench {
+            order.workspace = Some(workbench.snapshot()?);
+        }
+        let (ctx, output) = self.invoke(team.architect.as_ref(), root, &order).await?;
         let spec = expect_artifact(output, ArtifactKind::Specification, Role::Architect)?;
 
         state.history.push(if spec.revision == 1 {

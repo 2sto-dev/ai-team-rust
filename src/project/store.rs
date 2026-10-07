@@ -395,7 +395,14 @@ impl Store {
             )
             .optional()?
         {
-            Some(id) => id,
+            Some(id) => {
+                // A new task reopens the milestone: its report is rewritten once it is done.
+                tx.execute(
+                    "UPDATE milestones SET report_path = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+                id
+            }
             None => {
                 let position: i64 = tx.query_row(
                     "SELECT COALESCE(MAX(position) + 1, 0) FROM milestones WHERE project_id = ?1",

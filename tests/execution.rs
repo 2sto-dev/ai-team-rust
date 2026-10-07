@@ -577,4 +577,79 @@ north,10
         decisions.iter().filter(|d| d.decision == "request").count(),
         2
     );
+
+    // The "Owner requests" report is rewritten to cover the new request too.
+    let summary = manager.run("app", None).await.unwrap();
+    assert_eq!(summary.executed, [(second.id.clone(), TaskStatus::Done)]);
+    assert_eq!(summary.reports.len(), 1);
+    let report = fs::read_to_string(&summary.reports[0]).unwrap();
+    assert!(
+        report.contains("app-T01") && report.contains("app-T02"),
+        "{report}"
+    );
+}
+
+/// TestLlm for every role except the Architect, which is scripted.
+fn with_architect(architect: ScriptedProvider) -> ProviderFactory {
+    Arc::new(move |role, config| {
+        Ok(match role {
+            Role::Architect => Arc::new(architect.clone()) as Arc<dyn LlmProvider>,
+            _ => Arc::new(TestLlm::new(role, config.model.clone())),
+        })
+    })
+}
+
+#[tokio::test]
+async fn follow_up_tasks_are_specified_from_the_existing_files() {
+    let env = env();
+    env.planned(config(2, None)).await;
+    let first = env.orchestrator(test_providers());
+    ProjectManager::new(&env.store, &first)
+        .run("app", Some(1))
+        .await
+        .unwrap();
+    assert_eq!(env.store.task("app-T01").unwrap().status, TaskStatus::Done);
+
+    let architect = ScriptedProvider::new(["Specification: extend notes/result.md."]);
+    let second = env.orchestrator(with_architect(architect.clone()));
+    ProjectManager::new(&env.store, &second)
+        .run("app", Some(1))
+        .await
+        .unwrap();
+
+    let prompt = &architect.prompts()[0];
+    assert!(prompt.contains("EXISTING PROJECT FILES"), "{prompt}");
+    assert!(prompt.contains("notes/result.md"), "{prompt}");
+    assert!(
+        prompt.contains("CONTEXT: the project already holds work"),
+        "{prompt}"
+    );
+}
+
+#[tokio::test]
+async fn owner_questions_are_answered_without_changing_anything() {
+    let env = env();
+    env.planned(config(2, None)).await;
+    let first = env.orchestrator(test_providers());
+    ProjectManager::new(&env.store, &first)
+        .run("app", Some(1))
+        .await
+        .unwrap();
+    let head = env.git(&["rev-parse", "HEAD"]);
+    let tasks_before = env.store.tasks("app").unwrap().len();
+
+    let architect = ScriptedProvider::new(["The project has notes/result.md."]);
+    let orchestrator = env.orchestrator(with_architect(architect.clone()));
+    let answer = ProjectManager::new(&env.store, &orchestrator)
+        .ask("app", "ce contine proiectul?")
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "The project has notes/result.md.");
+    let prompt = &architect.prompts()[0];
+    assert!(prompt.contains("ce contine proiectul?"), "{prompt}");
+    assert!(prompt.contains("notes/result.md"), "{prompt}");
+    assert!(prompt.contains("app-T01 [DONE]"), "{prompt}");
+    assert_eq!(env.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(env.store.tasks("app").unwrap().len(), tasks_before);
 }

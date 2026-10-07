@@ -40,6 +40,17 @@ impl Architect {
 
     async fn specify(&self, ctx: &AgentContext, order: &WorkOrder) -> Result<Artifact> {
         let context = project_context(&order.project);
+        let existing = order
+            .workspace
+            .as_deref()
+            .map(|files| {
+                format!(
+                    "\n\nEXISTING PROJECT FILES (work the Owner already approved):\n{files}\n\n\
+                     Build on these files. Keep existing behaviour, functions and tests unless \
+                     the task explicitly asks to change them."
+                )
+            })
+            .unwrap_or_default();
 
         let (prompt, revision) = match (&order.specification, &order.review) {
             (Some(current), Some(review)) => (
@@ -47,7 +58,7 @@ impl Architect {
                     r#"{context}
 
 TASK:
-{task}
+{task}{existing}
 
 CURRENT SPECIFICATION (revision {revision}):
 {spec}
@@ -75,7 +86,7 @@ that were not criticised.
             ),
             _ => (
                 format!(
-                    "{context}\n\nTASK:\n{}\n\nProduce the technical specification for the Builder.\n",
+                    "{context}\n\nTASK:\n{}{existing}\n\nProduce the technical specification for the Builder.\n",
                     order.task
                 ),
                 1,

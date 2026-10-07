@@ -53,6 +53,12 @@ enum Commands {
         project: Option<String>,
     },
 
+    /// Ask a question about a project; answered from its files, nothing changes.
+    Ask {
+        project_id: String,
+        question: String,
+    },
+
     /// Give the team a task in your own words, with optional files; the team starts at once.
     Request {
         /// What you want done.
@@ -247,6 +253,18 @@ async fn main() -> Result<()> {
             json,
         } => run(&employees_dir, project, task, json).await,
         Commands::Console { project } => owner_console(&employees_dir, &cli.data, project).await,
+        Commands::Ask {
+            project_id,
+            question,
+        } => {
+            let store = Store::open(&cli.data)?;
+            let orchestrator = Orchestrator::from_registry(Registry::load(&employees_dir)?)?;
+            let answer = ProjectManager::new(&store, &orchestrator)
+                .ask(&project_id, &question)
+                .await?;
+            println!("{answer}");
+            Ok(())
+        }
         Commands::Request {
             prompt,
             files,
@@ -1167,7 +1185,9 @@ async fn owner_request(
 
 const CONSOLE_HELP: &str = "\
 Scrie cererea (poate avea mai multe randuri); un rand gol o trimite.
+O cerere porneste echipa si poate schimba codul. Pentru intrebari foloseste '?'.
 Comenzi:
+  ?<intrebare>    raspuns despre proiectul curent, fara sa se schimbe nimic
   /nou [nume]     urmatoarea cerere porneste un proiect nou (cu numele dat, ex. /nou ulise)
   /proiect <id>   cererile urmatoare merg in proiectul <id>
   /status         starea proiectului curent
@@ -1183,6 +1203,19 @@ fn read_line(prompt: &str) -> Result<Option<String>> {
         return Ok(None); // end of input
     }
     Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
+}
+
+/// Answers a question about the current project in the console (read-only).
+async fn console_ask(manager: &ProjectManager<'_>, project: Option<&str>, question: &str) {
+    let Some(project_id) = project else {
+        println!("Intrebarile au nevoie de un proiect: /proiect <id>.");
+        return;
+    };
+    println!("(echipa citeste proiectul, nu schimba nimic...)");
+    match manager.ask(project_id, question).await {
+        Ok(answer) => println!("\n{}", answer.trim()),
+        Err(err) => println!("Eroare: {err:#}"),
+    }
 }
 
 /// A path typed or dragged into the console (Windows wraps it in quotes).
@@ -1224,7 +1257,7 @@ async fn owner_console(
             let Some(line) = read_line(if lines.is_empty() { "> " } else { "... " })? else {
                 return Ok(());
             };
-            if lines.is_empty() && line.trim().starts_with('/') {
+            if lines.is_empty() && (line.trim().starts_with('/') || line.trim().starts_with('?')) {
                 lines.push(line);
                 break;
             }
@@ -1242,6 +1275,10 @@ async fn owner_console(
             lines.push(line);
         }
         let first = lines[0].trim().to_string();
+        if let Some(question) = first.strip_prefix('?') {
+            console_ask(&manager, current.as_deref(), question).await;
+            continue;
+        }
         if let Some(command) = first.strip_prefix('/') {
             let mut parts = command.split_whitespace();
             match (parts.next().unwrap_or(""), parts.next()) {
@@ -1291,6 +1328,18 @@ async fn owner_console(
             continue;
         }
         let prompt = lines.join("\n");
+
+        // A question typed as a request would become a task that rewrites code.
+        if current.is_some() && prompt.trim_end().ends_with('?') {
+            let choice = read_line(
+                "Pare o intrebare. [Enter] raspund fara sa schimb codul  [t] porneste echipa (task nou): ",
+            )?
+            .unwrap_or_default();
+            if !choice.trim().eq_ignore_ascii_case("t") {
+                console_ask(&manager, current.as_deref(), &prompt).await;
+                continue;
+            }
+        }
 
         // Files: paths typed or dragged into the console, one per line.
         let mut files = Vec::new();

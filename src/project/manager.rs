@@ -23,6 +23,16 @@ const MAX_TASK_PLAN_ATTEMPTS: u32 = 3;
 /// How much of a dependency's approved implementation is passed to a dependent task.
 const DEPENDENCY_CONTEXT_CHARS: usize = 6000;
 
+/// How much of the project's files a question sees.
+const QUESTION_SNAPSHOT_CHARS: usize = 24_000;
+
+const CONSULTANT_PROMPT: &str = "\
+You are the team's technical lead. The Owner asks a question about their project. Answer only \
+from the project files and task list you are given; say so when something is not there. Be \
+concise and concrete: name files and functions, and give exact commands (run from the project \
+folder). Do not write new code or propose a rewrite unless the Owner asks for it. Answer in the \
+language of the question.";
+
 #[derive(Debug)]
 pub struct RunSummary {
     /// Tasks worked on in this call, with the status each one ended in.
@@ -496,6 +506,20 @@ impl<'a> ProjectManager<'a> {
     fn compose_task(&self, project: &ProjectConfig, task: &TaskRecord) -> Result<String> {
         let mut text = format!("TASK {}: {}\n\n{}\n", task.id, task.title, task.description);
 
+        let approved = self
+            .store
+            .tasks(&task.project_id)?
+            .into_iter()
+            .any(|other| other.id != task.id && other.status == TaskStatus::Done);
+        if approved {
+            text.push_str(
+                "\nCONTEXT: the project already holds work the Owner approved (its current files). \
+                 This task changes or extends that work; keep everything it does not mention. \
+                 The project OBJECTIVE is the Owner's first request, not a description of this \
+                 task.\n",
+            );
+        }
+
         if !project.acceptance_criteria.is_empty() {
             text.push_str(
                 "\nPROJECT-LEVEL CRITERIA (context; this task covers only part of them):\n",
@@ -542,6 +566,39 @@ impl<'a> ProjectManager<'a> {
             }
         }
         Ok(text)
+    }
+
+    // -- owner questions ----------------------------------------------------
+
+    /// Answers the Owner's question about a project from its files and tasks. Read-only: no
+    /// task is created, nothing is committed and no file changes.
+    pub async fn ask(&self, project_id: &str, question: &str) -> Result<String> {
+        anyhow::ensure!(!question.trim().is_empty(), "the question is empty");
+        let project = self.store.project(project_id)?.config;
+        let files = self
+            .repository(&project)?
+            .snapshot(QUESTION_SNAPSHOT_CHARS)?;
+        let mut tasks = String::new();
+        for task in self.store.tasks(project_id)? {
+            let _ = writeln!(tasks, "- {} [{}] {}", task.id, task.status, task.title);
+        }
+        let prompt = format!(
+            "PROJECT: {}\n\nOBJECTIVE (the Owner's first request):\n{}\n\nTASKS:\n{}\n\
+             TEST COMMAND (run from the project folder): {}\n\nPROJECT FILES:\n{files}\n\n\
+             OWNER'S QUESTION:\n{question}\n",
+            project.name,
+            project.objective,
+            if tasks.is_empty() { "- none\n" } else { &tasks },
+            project.test_command.as_deref().unwrap_or("none configured"),
+        );
+        let answer = self
+            .orchestrator
+            .consultant()?
+            .complete(CONSULTANT_PROMPT, &prompt)
+            .await;
+        self.store
+            .add_planning_usage(project_id, &self.orchestrator.take_usage())?;
+        answer
     }
 
     // -- owner decisions ----------------------------------------------------

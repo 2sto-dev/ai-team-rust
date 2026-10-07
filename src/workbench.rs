@@ -19,6 +19,10 @@ pub trait Workbench: Send + Sync {
     /// The workspace and the rules for answers, shown to the Builder.
     fn briefing(&self) -> Result<String>;
 
+    /// The project's current files, shown to the Architect so the specification builds on
+    /// the existing work instead of starting over.
+    fn snapshot(&self) -> Result<String>;
+
     /// What the Builder must hold for the platform to act on its behalf.
     fn required_capabilities(&self) -> Vec<Capability>;
 
@@ -97,6 +101,10 @@ impl Workbench for TaskWorkbench {
              {tests}",
             self.workspace.snapshot(SNAPSHOT_BUDGET_CHARS)?
         ))
+    }
+
+    fn snapshot(&self) -> Result<String> {
+        self.workspace.snapshot(SNAPSHOT_BUDGET_CHARS)
     }
 
     fn required_capabilities(&self) -> Vec<Capability> {

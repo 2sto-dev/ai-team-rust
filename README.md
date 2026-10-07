@@ -134,6 +134,10 @@ Pornesc echipa? [D/n]
 - după prima cerere rămâi în același proiect: următoarea cerere devine un task nou al lui;
 - un task oprit (teste roșii, veto) te întreabă pe loc: **[r]** reia cu o notă pentru echipă,
   **[a]** acceptă, **[c]** anulează, Enter = lasă-l așa;
+- **o cerere pornește echipa și poate schimba codul**; pentru întrebări scrie `?` în față
+  (`?ce conține proiectul`): răspunde Arhitectul din fișierele proiectului, fără task și fără
+  commit. O cerere care se termină cu `?` te întreabă întâi dacă e o întrebare;
+- tot din linia de comandă: `cargo run -- ask <proiect> "întrebarea"`;
 - comenzi: `/nou [nume]` (proiect nou, ex. `/nou ulise`), `/proiect <id>`, `/status`, `/ajutor`, `/iesire`.
 
 ## Cerere rapidă a Owner-ului
