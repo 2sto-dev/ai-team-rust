@@ -1,15 +1,18 @@
 pub mod agents;
 pub mod audit;
 pub mod config;
+pub mod dashboard;
 pub mod domain;
 pub mod kpi;
 pub mod llm;
 pub mod mcp;
 pub mod orchestrator;
+pub mod owner;
 pub mod planner;
 pub mod project;
 pub mod registry;
 pub mod staffing;
+pub mod web;
 pub mod workbench;
 pub mod workspace;
 

@@ -7,6 +7,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use anyhow::Result;
+use serde::Serialize;
 
 use crate::{
     domain::TeamAssignment,
@@ -31,7 +32,7 @@ pub struct TaskFacts {
     pub approved_with_warnings: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Kpi {
     /// Tasks a team worked on.
     pub tasks: u32,
@@ -91,7 +92,7 @@ impl Kpi {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct KpiReport {
     pub overall: Kpi,
     pub by_builder: BTreeMap<String, Kpi>,

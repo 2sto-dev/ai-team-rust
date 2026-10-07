@@ -12,8 +12,9 @@ use crate::{
     workspace::{Workspace, extract_files, run_tests},
 };
 
-/// How much workspace content the Builder sees in its prompt.
-const SNAPSHOT_BUDGET_CHARS: usize = 24_000;
+/// How much workspace content the Builder and Architect see (about 20k tokens of a 64k
+/// context, leaving room for the spec, the last attempt, the review and the answer).
+const SNAPSHOT_BUDGET_CHARS: usize = 80_000;
 
 pub trait Workbench: Send + Sync {
     /// The workspace and the rules for answers, shown to the Builder.

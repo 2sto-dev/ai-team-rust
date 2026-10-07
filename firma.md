@@ -900,6 +900,10 @@ Realizat:
 - **propuneri de angajare de la Planner:** vede si specialistii existenti; cand un task cere o
   competenta pe care n-o are nimeni, scrie o propunere in `company/proposals/` (competente si
   motiv completate), pe care Owner-ul o completeaza si o aproba; rularea nu e oprita;
+- **dashboard si interfata web:** `ai-team dashboard` (doar citire) si `ai-team web` (aceeasi
+  pagina plus toate actiunile CLI: cereri cu fisiere, intrebari, decizii pe taskuri, setari,
+  planuri, angajari), locale (127.0.0.1, token per pornire), reimprospatate la 5 s: KPI, ce
+  asteapta decizia Owner-ului, proiecte si taskuri, echipa, activitatea recenta din audit;
 - **KPI** (sectiunea 18): `kpi [--project]` - rata de finalizare, aprobare din prima, cicluri de
   corectura, escaladari, acceptari ale Owner-ului, aprobari in ciuda avertismentelor, tokeni si
   cost per task finalizat; per Builder si per Reviewer.
@@ -908,7 +912,6 @@ Ramas, in ordinea propusa:
 
 - departamente suplimentare de nivel lead (ex. DevOps, Documentatie ca etapa separata) - cer o
   etapa noua in fluxul de lucru, nu doar angajati;
-- dashboard (proiecte, taskuri, consum, KPI, audit);
 - proiecte simultane si scheduling (acum totul e secvential, cu un singur working tree per
   proiect - schimbarea cea mai mare);
 - KPI-uri care cer date noi: "Defects after approval" (flux de raportare a defectelor pe taskuri

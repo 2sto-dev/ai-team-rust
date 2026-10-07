@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="ro" class="h-full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Team</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&display=swap">
+<style>/*__AI_TEAM_CSS__*/</style>
+</head>
+<body class="min-h-full bg-stone-50 font-sans text-stone-900 antialiased dark:bg-stone-950 dark:text-stone-100">
+
+<header class="sticky top-0 z-20 border-b border-brand-950 bg-brand-900 text-white shadow-sm dark:border-stone-800 dark:bg-stone-900">
+  <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
+    <div class="flex items-center gap-2.5">
+      <div class="grid size-9 place-items-center rounded-lg bg-white text-sm font-bold tracking-tight text-brand-900 shadow-sm">AI</div>
+      <div class="leading-tight">
+        <div class="text-base font-semibold tracking-tight">AI Team</div>
+        <div class="text-xs text-brand-200 italic dark:text-stone-400">Consola Owner-ului</div>
+      </div>
+    </div>
+    <span id="mode" class="pill bg-white/10 text-brand-100 ring-white/20 dark:text-stone-300"></span>
+    <div class="ml-auto flex items-center gap-4 text-xs text-brand-100 dark:text-stone-400">
+      <span class="flex items-center gap-1.5">
+        <span id="live-dot" class="size-2 rounded-full bg-white/40"></span>
+        <span id="updated">se încarcă…</span>
+      </span>
+      <label class="flex cursor-pointer items-center gap-2 select-none">
+        <input type="checkbox" id="auto" checked class="size-3.5 accent-white">
+        Reîmprospătare automată
+      </label>
+    </div>
+  </div>
+</header>
+
+<main class="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-12">
+  <div class="min-w-0 space-y-6 lg:col-span-8">
+
+    <section class="card w">
+      <div class="card-head">
+        <h2 class="card-title">Cerere nouă</h2>
+        <span class="hidden text-xs text-stone-500 sm:inline dark:text-stone-400">Echipa pornește în fundal; progresul apare pe pagină</span>
+      </div>
+      <div class="card-body space-y-4">
+        <div id="jobs" class="space-y-2 empty:hidden"></div>
+        <textarea id="req-prompt" rows="4" class="field min-h-28 resize-y" placeholder="Scrie ce vrei să facă echipa, sau o întrebare despre proiect…"></textarea>
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <label class="label" for="req-project">Proiect</label>
+            <select id="req-project" class="field"></select>
+          </div>
+          <div id="req-name-box">
+            <label class="label" for="req-name">Nume proiect</label>
+            <input id="req-name" class="field" placeholder="opțional, ex. ulise">
+          </div>
+          <div id="req-test-box" class="sm:col-span-2">
+            <label class="label" for="req-test">Comanda de test</label>
+            <div class="flex items-center gap-3">
+              <input id="req-test" class="field font-mono text-xs" value="python -m unittest discover -s tests -v">
+              <label id="req-notest-box" class="flex shrink-0 items-center gap-1.5 text-xs text-stone-600 dark:text-stone-400">
+                <input type="checkbox" id="req-notest" class="accent-brand-600"> fără teste
+              </label>
+            </div>
+          </div>
+        </div>
+        <div>
+          <label class="label" for="req-files">Fișiere — cu „Pornește echipa” ajung în <code class="font-mono">inputs/</code>; cu „Doar întreabă” sunt citite doar pentru răspuns, nu se salvează</label>
+          <input type="file" id="req-files" multiple class="block w-full text-sm text-stone-600 file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-stone-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-stone-700 hover:file:bg-stone-200 dark:text-stone-400 dark:file:bg-stone-800 dark:file:text-stone-200">
+        </div>
+        <div class="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-4 dark:border-stone-800">
+          <button class="btn btn-primary" id="req-send">Pornește echipa</button>
+          <button class="btn" id="req-ask">Doar întreabă</button>
+          <span class="text-xs text-stone-500 dark:text-stone-400" id="req-hint"></span>
+        </div>
+        <div id="answer" class="empty:hidden"></div>
+      </div>
+    </section>
+
+    <div id="live" class="empty:hidden"></div>
+    <section>
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6" id="kpi"></div>
+    </section>
+
+    <section id="alerts-box" class="card border-amber-200 dark:border-amber-900/60" hidden>
+      <div class="card-head border-amber-100 dark:border-amber-900/40">
+        <h2 class="card-title flex items-center gap-2">
+          <span class="size-2 rounded-full bg-amber-500"></span> Așteaptă decizia ta
+        </h2>
+      </div>
+      <div class="divide-y divide-stone-100 dark:divide-stone-800" id="alerts"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Proiecte</h2>
+      </div>
+      <div class="card-body space-y-4">
+        <div class="flex flex-wrap gap-2" id="projects"></div>
+        <div id="project"></div>
+        <details class="w group rounded-lg border border-dashed border-stone-300 px-4 py-3 dark:border-stone-700">
+          <summary class="cursor-pointer text-sm text-stone-600 dark:text-stone-400">Adaugă un proiect dintr-un JSON (ca <code class="font-mono text-xs">projects/*.json</code>)</summary>
+          <div class="mt-3 space-y-3">
+            <textarea id="pj-json" rows="5" class="field font-mono text-xs" placeholder='{"project_id":"demo","name":"Demo","objective":"...","max_iterations":3}'></textarea>
+            <button class="btn" id="pj-add">Adaugă proiectul</button>
+          </div>
+        </details>
+      </div>
+    </section>
+  </div>
+
+  <aside class="min-w-0 space-y-6 lg:col-span-4">
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Echipa</h2>
+        <span class="text-xs text-stone-500 dark:text-stone-400" id="team-count"></span>
+      </div>
+      <div class="card-body space-y-5" id="team"></div>
+      <details class="w border-t border-stone-100 px-5 py-3 dark:border-stone-800">
+        <summary class="cursor-pointer text-sm text-stone-600 dark:text-stone-400">Schimbă statutul unui angajat</summary>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <select id="st-employee" class="field w-auto flex-1"></select>
+          <select id="st-status" class="field w-auto"><option>active</option><option>suspended</option><option>disabled</option></select>
+          <button class="btn" id="st-save">Salvează</button>
+        </div>
+      </details>
+    </section>
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">Activitate recentă</h2>
+      </div>
+      <ol class="max-h-[34rem] overflow-y-auto px-5 py-3" id="feed"></ol>
+    </section>
+  </aside>
+</main>
+
+<div id="notice" class="fixed right-4 bottom-4 z-30 hidden max-w-[min(26rem,calc(100vw-2rem))] rounded-lg px-4 py-3 text-sm shadow-lg"></div>
+
+<script>
+const TOKEN = "__AI_TEAM_TOKEN__";
+const WRITABLE = __AI_TEAM_WRITABLE__;
+document.body.dataset.writable = String(WRITABLE);
+const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const pct = (part, whole) => whole ? Math.round(part * 100 / whole) + "%" : "–";
+const tokens = (u) => u ? (u.input_tokens + u.output_tokens).toLocaleString("ro-RO") : "–";
+const time = (ms) => new Date(ms).toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+// Literal class strings (Tailwind finds them in this file).
+const TONE = {
+  ok: "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20",
+  bad: "bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/20",
+  run: "bg-brand-50 text-brand-700 ring-brand-600/20 dark:bg-brand-500/10 dark:text-brand-300 dark:ring-brand-500/20",
+  warn: "bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20",
+  idle: "bg-stone-50 text-stone-600 ring-stone-500/20 dark:bg-stone-800 dark:text-stone-300 dark:ring-stone-700",
+};
+const STATUS_TONE = {
+  DONE: "ok", FAILED: "bad", HUMAN_REVIEW_REQUIRED: "bad", IN_PROGRESS: "run", REVIEW: "run",
+  CHANGES_REQUIRED: "run", ASSIGNED: "run", BLOCKED: "warn", CANCELLED: "warn", PLANNING: "warn",
+};
+const pill = (status) => `<span class="pill ${TONE[STATUS_TONE[status] || "idle"]}">${esc(status)}</span>`;
+
+let selected = null;
+try { selected = localStorage.getItem("ai-team-project"); } catch (_) {}
+const open = new Set();
+const drafts = {};          // unsent text in re-rendered forms, by field key
+let data = null;
+$("mode").textContent = WRITABLE ? "Interfață web" : "Doar citire";
+
+function notice(text, error = false) {
+  const box = $("notice");
+  box.textContent = text;
+  box.className = "fixed right-4 bottom-4 z-30 max-w-[min(26rem,calc(100vw-2rem))] rounded-lg px-4 py-3 text-sm shadow-lg " +
+    (error ? "bg-red-600 text-white" : "bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900");
+  clearTimeout(notice.timer);
+  notice.timer = setTimeout(() => { box.className += " hidden"; }, error ? 9000 : 5000);
+}
+
+async function post(action, body) {
+  const response = await fetch("/api/" + action, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-AI-Team-Token": TOKEN },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || response.statusText);
+  return result;
+}
+
+async function act(button, action, body, done) {
+  if (button) button.disabled = true;
+  try {
+    const result = await post(action, body);
+    if (result.message) notice(result.message);
+    if (result.started) notice("Echipa a pornit; progresul apare pe pagină.");
+    if (done) done(result);
+    await refresh();
+  } catch (err) {
+    notice(err.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// ----- rendering -----------------------------------------------------------
+
+function banner(tone, html) {
+  return `<div class="flex items-start gap-2 rounded-lg px-3.5 py-2.5 text-sm ring-1 ring-inset ${TONE[tone]}">${html}</div>`;
+}
+
+// What each step means, from the audit event of the run's latest step.
+const STEP_LABEL = {
+  RUN_CREATED: "pornește taskul", RUN_RESUMED: "reia taskul", AGENT_STARTED: "lucrează (apel la model)",
+  PLAN_PROPOSED: "a propus echipa", TEAM_ACCEPTED: "echipa e aprobată", TEAM_KEPT: "păstrează echipa",
+  CONSULTATION_STARTED: "dă note de design", CONSULTATION_DONE: "a dat notele",
+  ARCHITECTURE_READY: "specificația e gata", DELEGATION_PLANNED: "a împărțit lucrul",
+  DELEGATION_SKIPPED: "lucrează singur", SUBTASK_STARTED: "lucrează la subtask", SUBTASK_DONE: "subtask gata",
+  TOOL_CALL: "folosește o unealtă", IMPLEMENTATION_READY: "implementarea e gata",
+  VERIFICATION_PASSED: "testele au trecut", VERIFICATION_FAILED: "testele au picat; Builder-ul corectează",
+  ADVISOR_REVIEW: "review de securitate", REVIEW_COMPLETED: "review gata", CHANGES_REQUIRED: "cere corecturi",
+};
+const RUN_END = new Set(["DONE", "RUN_FAILED", "HUMAN_REVIEW_REQUIRED"]);
+const STALL_MS = 2 * 60 * 1000;
+const ago = (ms) => { const s = Math.round(ms / 1000); return s < 90 ? `${s} s` : `${Math.round(s / 60)} min`; };
+
+/// The run in progress, from the audit feed: also catches runs started from the console.
+function liveRun(d) {
+  const latest = d.activity[0];
+  if (!latest || RUN_END.has(latest.event)) return null;
+  const age = Date.now() - latest.unix_ms;
+  if (!d.job && age > 15 * 60 * 1000) return null;   // an old run that was stopped
+  const names = Object.fromEntries((d.team.employees || []).map((e) => [e.id, e.title]));
+  const who = names[latest.actor] || latest.actor;
+  return { latest, age, who, label: STEP_LABEL[latest.event] || latest.event };
+}
+
+function renderJobs(d) {
+  const items = [];
+  const run = liveRun(d);
+  if (d.job || run) {
+    const secs = d.job ? Math.round((Date.now() - d.job.started_unix_ms) / 1000) : null;
+    const head = d.job
+      ? `Echipa lucrează — <b>${esc(d.job.kind)}</b>${d.job.project_id ? " · " + esc(d.job.project_id) : ""} · ${ago(secs * 1000)}`
+      : `O rulare pornită din consolă e în curs${run.latest.task_id ? " · " + esc(run.latest.task_id) : ""}; nu porni alta pe același proiect`;
+    const step = run ? `<div class="mt-0.5 text-xs opacity-90">Acum: <b>${esc(run.who)}</b> ${esc(run.label)}${run.latest.task_id ? " · " + esc(run.latest.task_id) : ""} · de ${ago(run.age)}</div>` : "";
+    const stalled = run && run.age > STALL_MS && run.latest.event === "AGENT_STARTED" || run && run.age > 2 * STALL_MS;
+    items.push(banner(stalled ? "warn" : "run", `<span class="mt-1.5 size-2 shrink-0 animate-pulse rounded-full ${stalled ? "bg-amber-500" : "bg-brand-500"}"></span>
+      <div class="min-w-0"><div>${head}</div>${step}
+      ${stalled ? `<div class="mt-1 text-xs">Modelul nu a mai răspuns de ${ago(run.age)}. Un apel așteaptă până la 3 min (plus 2 reîncercări); dacă durează mult, verifică serverul Ollama sau oprește și repornește.</div>` : ""}</div>`));
+  }
+  const last = (d.recent_jobs || [])[0];
+  if (last && Date.now() - last.finished_unix_ms < 10 * 60 * 1000)
+    items.push(banner(last.status === "done" ? "ok" : "bad",
+      `<span><b>${last.status === "done" ? "Gata" : "Eșuat"}</b> (${esc(last.kind)}${last.project_id ? " · " + esc(last.project_id) : ""}, ${time(last.finished_unix_ms)}): ${esc(last.message)}</span>`));
+  $("jobs").innerHTML = items.join("");
+  $("req-send").disabled = !!d.job;
+  $("req-send").title = d.job ? "Echipa lucrează deja; așteaptă să termine." : "";
+}
+
+/// Read-only mode has no request card: show the live run above the KPIs.
+function renderLive(d) {
+  const run = liveRun(d);
+  $("live").innerHTML = run ? banner(run.age > STALL_MS ? "warn" : "run",
+    `<span class="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-brand-500"></span>
+     <span>În curs${run.latest.task_id ? " · <b>" + esc(run.latest.task_id) + "</b>" : ""}: ${esc(run.who)} ${esc(run.label)} · de ${ago(run.age)}</span>`) : "";
+}
+
+function renderRequestForm(d) {
+  const sel = $("req-project");
+  const current = sel.value;
+  sel.innerHTML = `<option value="">— proiect nou —</option>` +
+    d.projects.map((p) => `<option value="${esc(p.id)}">${esc(p.id)}</option>`).join("");
+  sel.value = d.projects.some((p) => p.id === current) ? current : (current === "" && sel.dataset.touched ? "" : (selected || ""));
+  updateRequestForm();
+}
+
+function updateRequestForm() {
+  const isNew = $("req-project").value === "";
+  $("req-name-box").hidden = !isNew;
+  $("req-test-box").hidden = !isNew;
+  $("req-test").disabled = $("req-notest").checked;
+  const hasFiles = $("req-files").files.length > 0;
+  $("req-ask").disabled = isNew && !hasFiles;
+  $("req-ask").title = isNew && !hasFiles ? "Alege un proiect sau atașează un document" : "";
+  const text = $("req-prompt").value.trim();
+  $("req-hint").textContent = text.endsWith("?") && !isNew ? "Pare o întrebare: „Doar întreabă” nu schimbă codul." : "";
+}
+
+function renderKpi(k) {
+  const o = k.overall;
+  const perTask = o.done ? Math.round((o.done_usage.input_tokens + o.done_usage.output_tokens) / o.done) : null;
+  const tiles = [
+    ["Taskuri", o.tasks, `${o.done} finalizate`],
+    ["Finalizare", pct(o.done, o.tasks), "din taskurile lucrate"],
+    ["Aprobate din prima", pct(o.first_pass, o.done), "fără corecturi"],
+    ["Corecturi / task", o.done ? (o.correction_cycles / o.done).toFixed(1) : "–", "cicluri medii"],
+    ["Escaladări", pct(o.escalated, o.tasks), o.owner_accepted ? `${o.owner_accepted} acceptate de tine` : "decizii ale tale"],
+    ["Tokeni / task", perTask === null ? "–" : perTask.toLocaleString("ro-RO"), o.approved_with_warnings ? `${o.approved_with_warnings} cu avertismente` : "per task finalizat"],
+  ];
+  $("kpi").innerHTML = tiles.map(([label, value, hint]) => `
+    <div class="card px-4 py-3.5">
+      <div class="text-xs font-medium text-stone-500 dark:text-stone-400">${esc(label)}</div>
+      <div class="mt-1 text-2xl font-semibold tracking-tight tabular-nums">${esc(value)}</div>
+      <div class="mt-0.5 truncate text-xs text-stone-500 dark:text-stone-400">${esc(hint)}</div>
+    </div>`).join("");
+}
+
+function alertRow(tone, text, buttons = "") {
+  const dot = tone === "bad" ? "bg-red-500" : "bg-amber-500";
+  return `<div class="flex flex-wrap items-center gap-3 px-5 py-3">
+    <span class="size-1.5 shrink-0 rounded-full ${dot}"></span>
+    <span class="min-w-0 flex-1 text-sm">${text}</span>${buttons}</div>`;
+}
+
+function renderAlerts(d) {
+  const items = [];
+  for (const p of d.projects) {
+    for (const t of p.tasks.filter((t) => t.needs_owner))
+      items.push(alertRow("bad", `<b>${esc(t.id)}</b> s-a oprit ${pill(t.status)} <span class="text-stone-500 dark:text-stone-400">${esc(t.title)}</span>`,
+        `<button class="btn w" data-open="${esc(p.id)}|${esc(t.id)}">Decide</button>`));
+    if (p.budget_stop) items.push(alertRow("bad", `<b>${esc(p.id)}</b>: ${esc(p.budget_stop)}`));
+    if (p.pending_plan) items.push(alertRow("warn", `<b>${esc(p.id)}</b>: planul propus așteaptă aprobarea ta`,
+      `<button class="btn w" data-open="${esc(p.id)}|">Vezi planul</button>`));
+  }
+  for (const id of d.proposals)
+    items.push(alertRow("warn", `Propunere de angajare <b>${esc(id)}</b> <span class="text-stone-500 dark:text-stone-400">— completează TODO-urile din company/proposals/${esc(id)}, apoi aprob-o</span>`,
+      `<div class="flex gap-2"><button class="btn w" data-hire="hire_check|${esc(id)}">Verifică</button>
+       <button class="btn btn-primary w" data-hire="hire_approve|${esc(id)}">Angajează</button></div>`));
+  $("alerts-box").hidden = items.length === 0;
+  $("alerts").innerHTML = items.join("");
+  for (const b of $("alerts").querySelectorAll("[data-open]")) b.onclick = () => {
+    const [project, task] = b.dataset.open.split("|");
+    selected = project; if (task) open.add(task); render();
+    $("project").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  for (const b of $("alerts").querySelectorAll("[data-hire]")) b.onclick = () => {
+    const [action, id] = b.dataset.hire.split("|");
+    if (action === "hire_approve" && !confirm(`Angajezi ${id}?`)) return;
+    act(b, action, { employee_id: id });
+  };
+}
+
+const draft = (key, fallback = "") => esc(drafts[key] ?? fallback);
+
+function taskActions(t) {
+  if (!WRITABLE) return "";
+  if (t.needs_owner) return `<div class="w mt-4 space-y-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+      <div class="text-xs font-semibold text-stone-700 dark:text-stone-300">Decizia ta</div>
+      <textarea rows="2" class="field" data-draft="note:${esc(t.id)}" placeholder="Notă pentru echipă: ce trebuie corectat (opțional)">${draft("note:" + t.id)}</textarea>
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="flex items-center gap-2 text-xs text-stone-600 dark:text-stone-400">Iterații în plus
+          <input type="number" min="1" max="10" class="field w-20" data-draft="iter:${esc(t.id)}" value="${draft("iter:" + t.id, "2")}"></label>
+        <div class="ml-auto flex flex-wrap gap-2">
+          <button class="btn btn-danger" data-task="cancel|${esc(t.id)}">Anulează</button>
+          <button class="btn" data-task="accept|${esc(t.id)}">Acceptă așa</button>
+          <button class="btn btn-primary" data-task="resume|${esc(t.id)}">Reia cu nota</button>
+        </div>
+      </div></div>`;
+  if (["PLANNED", "BLOCKED"].includes(t.status))
+    return `<div class="w mt-3"><button class="btn btn-danger" data-task="cancel|${esc(t.id)}">Anulează taskul</button></div>`;
+  return "";
+}
+
+function projectActions(p, d) {
+  if (!WRITABLE) return "";
+  const busy = !!d.job;
+  const pending = p.tasks.some((t) => ["PLANNED", "IN_PROGRESS", "REVIEW", "CHANGES_REQUIRED", "ASSIGNED"].includes(t.status));
+  let plan = "";
+  if (p.status === "PLANNING") {
+    plan = p.pending_plan
+      ? `<div class="rounded-lg border border-amber-200 bg-amber-50/60 p-4 dark:border-amber-900/60 dark:bg-amber-500/5">
+          <div class="mb-3 text-sm font-semibold">Plan propus</div>
+          <div class="space-y-3">${p.pending_plan.milestones.map((m, i) =>
+            `<div><div class="text-sm font-medium">Milestone ${i + 1}: ${esc(m.name)}</div>
+              <ul class="mt-1 space-y-0.5 text-sm text-stone-600 dark:text-stone-400">${m.tasks.map((t) =>
+                `<li><span class="font-mono text-xs">${esc(t.key)}</span> ${esc(t.title)}${t.depends_on.length ? ` <span class="text-xs text-stone-400">după ${esc(t.depends_on.join(", "))}</span>` : ""}</li>`).join("")}</ul></div>`).join("")}</div>
+          ${p.pending_plan.rationale ? `<p class="mt-3 text-xs text-stone-500 dark:text-stone-400">${esc(p.pending_plan.rationale)}</p>` : ""}
+          <div class="mt-4 flex gap-2"><button class="btn btn-primary" data-proj="approve">Aprobă planul</button>
+          <button class="btn" data-proj="plan" ${busy ? "disabled" : ""}>Cere alt plan</button></div></div>`
+      : `<div class="flex flex-wrap gap-2"><input class="field flex-1" data-draft="plannote:${esc(p.id)}" placeholder="Notă pentru Planner (opțional)" value="${draft("plannote:" + p.id)}">
+          <button class="btn btn-primary" data-proj="plan" ${busy ? "disabled" : ""}>Propune plan</button></div>`;
+  }
+  const settingsOpen = drafts["settings-open:" + p.id] ? "open" : "";
+  const input = (key, label, value, attrs = "") =>
+    `<div><label class="label">${label}</label><input class="field" data-draft="${key}:${esc(p.id)}" value="${draft(key + ":" + p.id, value)}" ${attrs}></div>`;
+  return `<div class="w mt-4 space-y-4">${plan}
+    ${pending ? `<div><button class="btn" data-proj="run" ${busy ? "disabled" : ""}>Rulează taskurile rămase</button></div>` : ""}
+    <details ${settingsOpen} data-settings="${esc(p.id)}" class="rounded-lg border border-stone-200 px-4 py-3 dark:border-stone-800">
+      <summary class="cursor-pointer text-sm text-stone-600 dark:text-stone-400">Setări proiect</summary>
+      <div class="mt-3 grid gap-3 sm:grid-cols-2">
+        ${input("test", "Comanda de test (gol = fără)", p.test_command || "", `class="field font-mono text-xs"`)}
+        ${input("remote", "Remote git (gol = doar local)", p.remote_url || "")}
+        ${input("timeout", "Timeout teste (secunde)", "", `type="number" min="1" placeholder="neschimbat"`)}
+        ${input("btok", "Buget tokeni (0 = fără limită)", "", `type="number" min="0" placeholder="${esc(p.budget || "fără limită")}"`)}
+        ${input("busd", "Buget USD (0 = fără limită)", "", `type="number" min="0" step="0.01" placeholder="neschimbat"`)}
+      </div>
+      <div class="mt-3"><button class="btn" data-proj="configure">Salvează setările</button></div>
+    </details></div>`;
+}
+
+function renderProjects(d) {
+  if (!d.projects.length) {
+    $("projects").innerHTML = "";
+    $("project").innerHTML = `<div class="rounded-lg border border-dashed border-stone-300 px-4 py-10 text-center text-sm text-stone-500 dark:border-stone-700 dark:text-stone-400">
+      Niciun proiect încă. ${WRITABLE ? "Scrie o cerere mai sus." : "Pornește unul din consolă: <code class=\"font-mono\">cargo run -- console</code>"}</div>`;
+    return;
+  }
+  if (!d.projects.some((p) => p.id === selected)) {
+    const recent = d.activity.find((e) => e.task_id);
+    const hit = recent && d.projects.find((p) => recent.task_id.startsWith(p.id + "-"));
+    selected = hit ? hit.id : d.projects[d.projects.length - 1].id;
+  }
+  $("projects").innerHTML = d.projects.map((p) => {
+    const on = p.id === selected;
+    const progress = p.counts.total ? Math.round(p.counts.done * 100 / p.counts.total) : 0;
+    return `<button data-id="${esc(p.id)}" class="group min-w-36 cursor-pointer rounded-lg border px-3 py-2 text-left transition ${on
+      ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500 dark:bg-brand-500/10"
+      : "border-stone-200 hover:border-stone-300 hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-800/60"}">
+      <div class="flex items-center justify-between gap-2"><span class="text-sm font-medium">${esc(p.id)}</span>
+        ${p.counts.waiting ? `<span class="size-2 rounded-full bg-red-500" title="așteaptă decizia ta"></span>` : ""}</div>
+      <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-stone-200 dark:bg-stone-800"><div class="h-full rounded-full bg-brand-500" style="width:${progress}%"></div></div>
+      <div class="mt-1 text-xs text-stone-500 dark:text-stone-400">${esc(p.status)} · ${p.counts.done}/${p.counts.total}</div></button>`;
+  }).join("");
+  for (const b of $("projects").querySelectorAll("button"))
+    b.onclick = () => { selected = b.dataset.id; try { localStorage.setItem("ai-team-project", selected); } catch (_) {} render(); };
+
+  const p = d.projects.find((p) => p.id === selected);
+  // Redraw only when something shown changed: keeps the scroll of an open file or log.
+  const signature = JSON.stringify([selected, p, [...open], !!d.job, WRITABLE]);
+  if (signature === renderProjects.last && $("files-box")) { renderFiles(p); return; }
+  renderProjects.last = signature;
+  const rows = p.tasks.map((t) => {
+    const expanded = open.has(t.id);
+    const detail = expanded ? `<tr><td colspan="7" class="bg-stone-50 px-4 py-4 dark:bg-stone-950/60">
+        <div class="space-y-2 text-sm">
+          ${t.team ? `<div class="text-xs text-stone-500 dark:text-stone-400">Echipa: <span class="font-mono">${esc(t.team.architect)} / ${esc(t.team.builder)} / ${esc(t.team.reviewer)}</span></div>` : ""}
+          ${t.warnings.map((w) => banner("warn", `⚠ <span>${esc(w)}</span>`)).join("")}
+          ${t.error ? banner("bad", esc(t.error)) : ""}
+          ${t.review ? `<div class="rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-800 dark:bg-stone-900">
+              <div class="mb-1 text-xs font-semibold text-stone-500 dark:text-stone-400">Ultimul review · ${esc(t.review.decision)}</div>
+              <div class="whitespace-pre-wrap">${esc(t.review.feedback)}</div></div>` : ""}
+          ${t.history.length ? `<pre class="overflow-x-auto rounded-lg bg-stone-900 p-3 font-mono text-xs leading-relaxed text-stone-200 dark:bg-black/60">${esc(t.history.join("\n"))}</pre>`
+            : `<div class="text-xs text-stone-500">Nu a pornit încă.</div>`}
+          ${taskActions(t)}
+        </div></td></tr>` : "";
+    return `<tr class="task cursor-pointer transition hover:bg-stone-50 dark:hover:bg-stone-800/40" data-id="${esc(t.id)}">
+      <td class="td font-mono text-xs text-stone-500">${esc(t.id.split("-").pop())}</td>
+      <td class="td"><div class="flex items-start gap-1.5"><span class="mt-0.5 text-stone-400 transition ${expanded ? "rotate-90" : ""}">›</span>
+        <span>${esc(t.title)}${t.warnings.length ? ` <span class="text-amber-600" title="avertismente">⚠</span>` : ""}</span></div></td>
+      <td class="td">${pill(t.status)}</td>
+      <td class="td tabular-nums whitespace-nowrap">${t.iterations ?? "–"}/${t.iteration_budget}</td>
+      <td class="td">${t.tests === "passed" ? `<span class="text-emerald-600 dark:text-emerald-400">trecute</span>` : t.tests === "failed" ? `<span class="text-red-600 dark:text-red-400">picate</span>` : `<span class="text-stone-400">${esc(t.tests ?? "–")}</span>`}</td>
+      <td class="td tabular-nums whitespace-nowrap text-stone-600 dark:text-stone-400">${tokens(t.usage)}</td>
+      <td class="td text-xs text-stone-500 dark:text-stone-400">${esc(t.milestone ?? "")}</td></tr>${detail}`;
+  }).join("");
+  const chip = (label, value) => `<div class="rounded-lg bg-stone-50 px-3 py-2 dark:bg-stone-950/60">
+    <div class="text-[11px] font-medium uppercase tracking-wide text-stone-500 dark:text-stone-400">${label}</div>
+    <div class="mt-0.5 truncate text-sm">${value}</div></div>`;
+  $("project").innerHTML = `
+    <div class="mb-1 text-base font-semibold">${esc(p.name)}</div>
+    <div class="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      ${chip("Teste", p.test_command ? `<code class="font-mono text-xs">${esc(p.test_command)}</code>` : `<span class="text-amber-600 dark:text-amber-400">fără comandă de test</span>`)}
+      ${chip("Buget", esc(p.budget ?? "fără limită"))}
+      ${chip("Consum", `${tokens(p.usage)} tokeni${p.usage.cost_usd ? ` · $${p.usage.cost_usd.toFixed(4)}` : ""}`)}
+      ${chip("Remote", esc(p.remote_url ?? "doar local"))}
+    </div>
+    <div class="overflow-x-auto rounded-lg border border-stone-200 dark:border-stone-800">
+      <table class="w-full">
+        <thead class="bg-stone-50 dark:bg-stone-950/60"><tr>
+          <th class="th">#</th><th class="th">Task</th><th class="th">Stare</th><th class="th">Iterații</th>
+          <th class="th">Teste</th><th class="th">Tokeni</th><th class="th">Milestone</th></tr></thead>
+        <tbody class="divide-y divide-stone-100 dark:divide-stone-800">${rows || `<tr><td colspan="7" class="td text-center text-stone-500">Fără taskuri.</td></tr>`}</tbody>
+      </table>
+    </div>
+    <div id="files-box" class="mt-4"></div>
+    ${projectActions(p, d)}`;
+  renderFiles(p);
+
+  for (const row of $("project").querySelectorAll("tr.task"))
+    row.onclick = () => { open.has(row.dataset.id) ? open.delete(row.dataset.id) : open.add(row.dataset.id); render(); };
+  for (const field of $("project").querySelectorAll("[data-draft]")) {
+    field.onclick = (e) => e.stopPropagation();
+    field.oninput = () => { drafts[field.dataset.draft] = field.value; };
+  }
+  const settings = $("project").querySelector("[data-settings]");
+  if (settings) settings.ontoggle = () => { drafts["settings-open:" + p.id] = settings.open; };
+  for (const b of $("project").querySelectorAll("[data-task]")) b.onclick = (e) => {
+    e.stopPropagation();
+    const [action, id] = b.dataset.task.split("|");
+    const body = { task_id: id, note: drafts["note:" + id] || null };
+    if (action === "resume") body.iterations = Number(drafts["iter:" + id] || 2);
+    if (action === "cancel" && !confirm(`Anulezi ${id}?`)) return;
+    act(b, action, body, () => { delete drafts["note:" + id]; delete drafts["iter:" + id]; });
+  };
+  for (const b of $("project").querySelectorAll("[data-proj]")) b.onclick = () => {
+    const action = b.dataset.proj;
+    const id = p.id;
+    if (action === "configure") {
+      const num = (key) => drafts[key] === undefined || drafts[key] === "" ? null : Number(drafts[key]);
+      const text = (key) => drafts[key] === undefined ? null : drafts[key];
+      act(b, "configure", {
+        project_id: id, test_command: text("test:" + id), test_timeout: num("timeout:" + id),
+        remote: text("remote:" + id), budget_tokens: num("btok:" + id), budget_usd: num("busd:" + id),
+      }, () => { for (const k of ["test", "timeout", "remote", "btok", "busd"]) delete drafts[k + ":" + id]; });
+    } else if (action === "plan") {
+      act(b, "plan", { project_id: id, note: drafts["plannote:" + id] || null });
+    } else {
+      act(b, action, { project_id: id });
+    }
+  };
+}
+
+// ----- project files ------------------------------------------------------------
+
+const files = { project: null, signature: "", list: [], open: null, error: "" };
+const size = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
+
+async function loadFiles(p) {
+  try {
+    const response = await fetch(`/api/files?project=${encodeURIComponent(p.id)}`, { cache: "no-store" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || response.statusText);
+    files.list = body.files; files.error = "";
+  } catch (err) { files.error = err.message; }
+  if (selected === p.id) drawFiles();
+}
+
+async function openFile(path) {
+  files.open = { path, text: null, note: "se încarcă…" };
+  drawFiles();
+  try {
+    const response = await fetch(`/api/file?project=${encodeURIComponent(files.project)}&path=${encodeURIComponent(path)}`, { cache: "no-store" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || response.statusText);
+    files.open = { path, text: body.text, note: body.note || "", size: body.size };
+  } catch (err) { files.open = { path, text: null, note: err.message }; }
+  drawFiles();
+}
+
+function renderFiles(p) {
+  // Reload the list when the project or its work changes, not on every refresh.
+  const signature = p.id + "|" + p.tasks.map((t) => t.status + (t.iterations ?? "")).join(",");
+  if (files.project !== p.id) { files.project = p.id; files.list = []; files.open = null; }
+  if (files.signature !== signature) { files.signature = signature; loadFiles(p); }
+  drawFiles();
+}
+
+function drawFiles() {
+  const box = $("files-box");
+  if (!box) return;
+  const groups = {};
+  for (const f of files.list) {
+    const dir = f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : "";
+    (groups[dir] ||= []).push(f);
+  }
+  const list = Object.keys(groups).sort().map((dir) => `
+    ${dir ? `<div class="mt-2 px-2 text-[11px] font-medium uppercase tracking-wide text-stone-400">${esc(dir)}/</div>` : ""}
+    ${groups[dir].map((f) => {
+      const on = files.open && files.open.path === f.path;
+      return `<button data-file="${esc(f.path)}" class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1 text-left text-sm transition ${on
+        ? "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-300"
+        : "hover:bg-stone-100 dark:hover:bg-stone-800"}"><span class="truncate font-mono text-xs">${esc(f.path.split("/").pop())}</span>
+        <span class="shrink-0 text-[11px] text-stone-400">${size(f.size)}</span></button>`;
+    }).join("")}`).join("");
+  const viewer = files.open ? `
+    <div class="min-w-0 flex-1 overflow-hidden rounded-lg border border-stone-200 dark:border-stone-800">
+      <div class="flex items-center justify-between gap-2 border-b border-stone-200 bg-stone-50 px-3 py-2 dark:border-stone-800 dark:bg-stone-950/60">
+        <span class="truncate font-mono text-xs">${esc(files.open.path)}</span>
+        <div class="flex shrink-0 gap-1.5">
+          ${files.open.text !== null ? `<button class="btn px-2 py-0.5 text-xs" id="file-copy">Copiază</button>` : ""}
+          <button class="btn px-2 py-0.5 text-xs" id="file-close">Închide</button></div></div>
+      ${files.open.text !== null
+        ? `<pre class="max-h-[32rem] overflow-auto p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">${esc(files.open.text)}</pre>`
+        : `<div class="p-4 text-sm text-stone-500">${esc(files.open.note)}</div>`}
+    </div>` : `<div class="hidden flex-1 place-items-center rounded-lg border border-dashed border-stone-300 text-sm text-stone-400 sm:grid dark:border-stone-700">Alege un fișier ca să-l vezi</div>`;
+  box.innerHTML = `
+    <div class="mb-2 flex items-center justify-between">
+      <div class="text-sm font-semibold">Fișiere <span class="font-normal text-stone-500 dark:text-stone-400">(${files.list.length})</span></div>
+      <span class="text-xs text-stone-500 dark:text-stone-400">ce a produs echipa și ce ai încărcat</span></div>
+    ${files.error ? banner("bad", esc(files.error)) : files.list.length ? `
+    <div class="flex flex-col gap-3 sm:flex-row">
+      <div class="max-h-[32rem] shrink-0 overflow-y-auto rounded-lg border border-stone-200 p-1.5 sm:w-60 dark:border-stone-800">${list}</div>
+      ${viewer}
+    </div>` : `<div class="text-sm text-stone-500">Niciun fișier încă.</div>`}`;
+  for (const b of box.querySelectorAll("[data-file]")) b.onclick = () => openFile(b.dataset.file);
+  const close = $("file-close"); if (close) close.onclick = () => { files.open = null; drawFiles(); };
+  const copy = $("file-copy"); if (copy) copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(files.open.text); notice("Copiat."); } catch (_) { notice("Nu pot copia.", true); }
+  };
+}
+
+function renderTeam(team, kpi) {
+  if (team.error) { $("team").innerHTML = banner("bad", esc(team.error)); return; }
+  const people = team.employees;
+  $("team-count").textContent = `${people.length} angajați`;
+  const director = people.find((e) => e.manager === "OWNER");
+  const leads = people.filter((e) => director && e.manager === director.id).sort((a, b) => a.id.localeCompare(b.id));
+  const stats = (id) => {
+    const k = kpi.by_builder[id] || kpi.by_reviewer[id];
+    return k ? `<span class="text-xs tabular-nums text-stone-500 dark:text-stone-400">${k.done}/${k.tasks} gata</span>` : "";
+  };
+  const badges = (e) => [
+    e.status !== "active" ? `<span class="pill ${TONE.warn}">${esc(e.status)}</span>` : "",
+    e.veto ? `<span class="pill ${TONE.bad}">veto</span>` : "",
+  ].join("");
+  const initials = (name) => name.replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase();
+  $("team").innerHTML = (director ? `<div class="flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
+      <span class="font-medium text-stone-700 dark:text-stone-300">Owner</span> → ${esc(director.title)} <span class="font-mono">${esc(director.id)}</span></div>` : "") +
+    leads.map((lead) => {
+      const subs = people.filter((e) => e.manager === lead.id).sort((a, b) => a.id.localeCompare(b.id));
+      return `<div>
+        <div class="flex items-center gap-2.5">
+          <div class="grid size-8 shrink-0 place-items-center rounded-full bg-brand-100 text-[11px] font-semibold text-brand-700 dark:bg-brand-500/15 dark:text-brand-300">${esc(initials(lead.name))}</div>
+          <div class="min-w-0 flex-1"><div class="truncate text-sm font-medium">${esc(lead.title)} ${badges(lead)}</div>
+            <div class="font-mono text-[11px] text-stone-500 dark:text-stone-400">${esc(lead.id)} · ${esc(lead.model ?? "")}</div></div>
+          ${stats(lead.id)}
+        </div>
+        ${subs.length ? `<ul class="mt-2 ml-4 space-y-1.5 border-l border-stone-200 pl-4 dark:border-stone-800">${subs.map((e) => `
+          <li class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+            <span class="text-stone-700 dark:text-stone-300">${esc(e.title)}</span> ${badges(e)}
+            ${e.skill_packs.map((s) => `<span class="tag">${esc(s)}</span>`).join("")}</li>`).join("")}</ul>` : ""}
+      </div>`;
+    }).join("");
+  const sel = $("st-employee");
+  if (document.activeElement !== sel) {
+    const current = sel.value;
+    sel.innerHTML = people.filter((e) => e.function !== "orchestrator").sort((a, b) => a.id.localeCompare(b.id))
+      .map((e) => `<option value="${esc(e.id)}">${esc(e.id)} (${esc(e.status)})</option>`).join("");
+    if (current) sel.value = current;
+  }
+}
+
+const EVENT_TONE = { DONE: "bg-emerald-500", APPROVED: "bg-emerald-500", RUN_FAILED: "bg-red-500", VETO_APPLIED: "bg-red-500",
+  VERIFICATION_FAILED: "bg-red-500", CHANGES_REQUIRED: "bg-amber-500", HUMAN_REVIEW_REQUIRED: "bg-amber-500" };
+function renderFeed(events) {
+  $("feed").innerHTML = events.length ? events.map((e) => `
+    <li class="relative flex gap-3 pb-3 last:pb-0">
+      <span class="mt-1.5 size-1.5 shrink-0 rounded-full ${EVENT_TONE[e.event] || "bg-stone-300 dark:bg-stone-600"}"></span>
+      <div class="min-w-0 text-xs">
+        <div class="font-mono text-stone-800 dark:text-stone-200"><span class="text-stone-500 dark:text-stone-400">${esc(e.actor)}</span> ${esc(e.event)}</div>
+        <div class="text-stone-400">${esc(time(e.unix_ms))}${e.task_id ? ` · ${esc(e.task_id)}` : ""}</div>
+      </div></li>`).join("")
+    : `<li class="py-6 text-center text-sm text-stone-500">Nicio rulare încă.</li>`;
+}
+
+function editing(container) {
+  const el = document.activeElement;
+  return el && container.contains(el) && el.matches("input, textarea, select");
+}
+
+function render() {
+  if (!data) return;
+  renderKpi(data.kpi);
+  renderAlerts(data);
+  // Do not redraw a form the Owner is typing in; the next refresh catches up.
+  if (!editing($("project"))) renderProjects(data);
+  renderTeam(data.team, data.kpi);
+  renderFeed(data.activity);
+  if (WRITABLE) { renderJobs(data); if (!editing($("req-project").parentElement)) renderRequestForm(data); }
+  else renderLive(data);
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("/api/snapshot", { cache: "no-store" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || response.statusText);
+    data = body;
+    render();
+    $("updated").textContent = "Actualizat " + time(body.generated_unix_ms);
+    $("updated").classList.remove("text-red-300");
+    $("live-dot").className = "size-2 rounded-full " + (body.job ? "bg-sky-300 animate-pulse" : "bg-emerald-400");
+  } catch (err) {
+    $("updated").textContent = "Eroare: " + err.message;
+    $("updated").classList.add("text-red-300");
+    $("live-dot").className = "size-2 rounded-full bg-red-400";
+  }
+}
+
+// ----- request form -----------------------------------------------------------
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, data: String(reader.result).split(",", 2)[1] || "" });
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+if (WRITABLE) {
+  $("req-project").onchange = () => { $("req-project").dataset.touched = "1"; updateRequestForm(); };
+  $("req-notest").onchange = updateRequestForm;
+  $("req-prompt").oninput = updateRequestForm;
+  $("req-send").onclick = async () => {
+    const prompt = $("req-prompt").value.trim();
+    if (!prompt) return notice("Scrie întâi cererea.", true);
+    const projectId = $("req-project").value;
+    // A question sent as work becomes a task that rewrites code (seen in real use).
+    if (projectId && /\?\s*$/.test(prompt) &&
+        confirm("Textul pare o întrebare.\n\nOK = doar răspuns, fără să se schimbe codul.\nAnulează = pornește echipa cu un task nou.")) {
+      $("req-ask").click();
+      return;
+    }
+    let files;
+    try { files = await Promise.all([...$("req-files").files].map(readFile)); }
+    catch (err) { return notice("Nu pot citi fișierul: " + err.message, true); }
+    const body = { prompt, project_id: projectId || null, files };
+    if (!projectId) {
+      body.name = $("req-name").value.trim() || null;
+      body.test_command = $("req-notest").checked ? null : ($("req-test").value.trim() || null);
+    }
+    act($("req-send"), "request", body, () => {
+      $("req-prompt").value = ""; $("req-files").value = ""; $("req-name").value = "";
+      if (!projectId) { selected = null; $("req-project").dataset.touched = ""; }
+      updateRequestForm();
+    });
+  };
+  $("req-files").onchange = updateRequestForm;
+  $("req-ask").onclick = async () => {
+    const question = $("req-prompt").value.trim();
+    const projectId = $("req-project").value;
+    const picked = [...$("req-files").files];
+    if (!question) return notice("Scrie întâi întrebarea.", true);
+    if (!projectId && !picked.length) return notice("Alege un proiect sau atașează un document.", true);
+    let files;
+    try { files = await Promise.all(picked.map(readFile)); }
+    catch (err) { return notice("Nu pot citi fișierul: " + err.message, true); }
+    const about = [projectId && `proiectul ${projectId}`, picked.length && picked.map((f) => f.name).join(", ")].filter(Boolean).join(" + ");
+    $("answer").innerHTML = `<div class="rounded-lg border-l-4 border-brand-500 bg-brand-50/60 px-4 py-3 text-sm text-stone-500 dark:bg-brand-500/10">
+      <span class="inline-block size-2 animate-pulse rounded-full bg-brand-500"></span> Echipa citește ${esc(about)}…</div>`;
+    act($("req-ask"), "ask", { project_id: projectId || null, question, files }, (r) => {
+      $("answer").innerHTML = `<div class="rounded-lg border-l-4 border-brand-500 bg-brand-50/60 px-4 py-3 text-sm dark:bg-brand-500/10">
+        <div class="mb-1 font-semibold">${esc(question)}</div>
+        <div class="mb-3 text-xs text-stone-500 dark:text-stone-400">din ${esc(about)}</div>
+        <div class="whitespace-pre-wrap leading-relaxed">${esc(r.answer)}</div></div>`;
+      $("req-files").value = ""; updateRequestForm();
+    }).then(() => { if ($("answer").textContent.includes("citește")) $("answer").innerHTML = ""; });
+  };
+  $("pj-add").onclick = () => act($("pj-add"), "add_project", { json: $("pj-json").value }, () => { $("pj-json").value = ""; });
+  $("st-save").onclick = () => {
+    const id = $("st-employee").value;
+    const status = $("st-status").value;
+    if (!confirm(`${id} devine ${status}?`)) return;
+    act($("st-save"), "set_status", { employee_id: id, status });
+  };
+}
+
+refresh();
+setInterval(() => { if ($("auto").checked && !document.hidden) refresh(); }, 5000);
+</script>
+</body>
+</html>

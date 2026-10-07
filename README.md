@@ -276,14 +276,17 @@ Configurația curentă a echipei (server Ollama `http://10.10.0.14:11434`):
 
 | Angajat | Model | `num_ctx` | `num_predict` |
 |---|---|---|---|
-| Planner | `qwen3-coder:30b` | 32768 | 4096 (un plan de proiect în JSON) |
-| Architect, Builder | `qwen3-coder:30b` | 32768 | 8192 (specificații și implementări pe taskuri reale) |
-| Reviewer | `qwen2.5:14b` (altă familie decât Builder-ul → verificare independentă) | 32768 | 1200 |
+| Planner | `qwen3-coder:30b` | 65536 | 4096 (un plan de proiect în JSON) |
+| Architect, Builder, specialiști, consultanți | `qwen3-coder:30b` | 65536 | 8192 (consultanții 2048) |
+| Reviewer, Security | `qwen2.5:14b` (altă familie decât Builder-ul → verificare independentă) | 32768 (maximul modelului) | 1200 |
 
-Toți: `temperature: 0.1`, `timeout_secs: 180`. De ce `num_ctx: 32768` și nu 65536: la 65536
-`qwen3-coder:30b` nu mai încape în GPU și scade de la ~147 la ~7 tokeni/s; `qwen2.5:14b` are oricum
-contextul maxim 32768. Modelele cu „thinking” (`qwen3:4b`, `qwen3.6`) nu sunt folosite: gândirea
-consumă `num_predict` și nu mai ajung la răspunsul JSON.
+Toți: `temperature: 0.1`, `timeout_secs: 180`. Context de 65536 tokeni (măsurat pe 10.10.0.14, GPU de
+24 GB): 98% din model în GPU, ~94 tokeni/s la prompturi scurte; un prompt de ~34.000 de tokeni e citit
+în ~18 s, iar răspunsul vine cu ~70 tokeni/s (la 49152 totul încape în GPU, ~151 tokeni/s). Toți
+angajații pe același model folosesc aceeași valoare — altfel Ollama reîncarcă modelul. Un prompt
+prea lung pentru context e eroare clară (Ollama i-ar tăia în tăcere începutul, cu tot cu
+instrucțiuni). Modelele cu „thinking” (`qwen3:4b`, `qwen3.6`) nu sunt folosite: gândirea consumă
+`num_predict` și nu mai ajung la răspunsul JSON.
 
 Exemplu de bloc `model:`:
 
@@ -293,7 +296,7 @@ model:
   model: qwen3-coder:30b
   base_url: http://10.10.0.14:11434   # fără /v1
   temperature: 0.1
-  num_ctx: 32768
+  num_ctx: 65536
   num_predict: 8192
   timeout_secs: 180
 ```
@@ -520,6 +523,58 @@ EMP-REV-001   Reviewer
   competențele și motivul completate). Rularea continuă cu echipa aleasă. Tu completezi
   responsabilitățile, apoi `ai-team hire check <ID>` și `ai-team hire approve <ID>`. O propunere
   care așteaptă nu e scrisă de două ori.
+
+## Dashboard și interfața web (Faza 6)
+
+```powershell
+cargo run -- web                    # interfața web: dashboard + toate acțiunile, http://127.0.0.1:8787
+cargo run -- dashboard              # doar dashboard-ul, fără acțiuni
+cargo run -- web --port 9000
+```
+
+**Interfața web (`web`)** face ce face CLI-ul:
+
+- **cerere nouă:** text, proiect nou (cu nume și comandă de test) sau existent, fișiere atașate
+  (ajung în `inputs/`); echipa pornește în fundal, progresul apare pe pagină;
+- **„Doar întreabă”:** răspuns pe pagină din fișierele proiectului, fără să se schimbe ceva; poți
+  atașa documente (`.md`, `.txt`, cod, CSV) — sunt citite doar pentru răspuns, nu se salvează — și
+  merge și fără proiect („— proiect nou —” + document = explică-mi documentul);
+- **fișierele proiectului:** lista din proiect, cu click pe un fișier ca să-l citești (ce a scris
+  echipa și ce ai încărcat în `inputs/`), plus „Copiază”;
+- **decizii pe taskuri oprite:** reia (cu notă și iterații), acceptă, anulează;
+- **proiect:** rulează taskurile rămase, setări (comandă de test, timeout, remote, bugete), plan
+  propus / aprobat, proiect nou dintr-un JSON ca `projects/*.json`;
+- **echipă:** verifică / aprobă propunerile de angajare, schimbă statutul unui angajat.
+
+Echipa lucrează la un singur lucru odată (ca în CLI); o a doua pornire primește „echipa lucrează
+deja”. Nu rula în același timp consola și interfața web pe același proiect.
+
+**Aspect:** Tailwind CSS v4, compilat o dată în `src/dashboard.css` și inclus în binar; paletă
+bleumarin pe neutre calde, fontul **Lora** (Google Fonts — singura resursă externă; fără internet
+pagina folosește Georgia); mod luminos/întunecat după sistem, funcționează și pe telefon. Dacă schimbi
+clasele din `src/dashboard.html`, regenerează CSS-ul (Node.js necesar doar pentru asta):
+
+```powershell
+npm install        # o singură dată
+npm run css        # src/dashboard.css; apoi cargo build
+```
+
+**Siguranță:** ascultă doar pe `127.0.0.1` și refuză alte nume de host; fiecare acțiune cere un
+token secret generat la pornire și pus în pagină, așa că o altă pagină deschisă în browser nu poate
+trimite comenzi. `dashboard` nu are token și refuză orice acțiune.
+
+O pagină web locală, doar de citit, care se reîmprospătează la 5 secunde (vezi o rulare în timp
+ce se întâmplă, inclusiv dintr-o consolă deschisă în paralel):
+
+- **KPI**-urile echipei;
+- **Așteaptă decizia ta:** taskuri oprite (resume/accept/cancel), bugete atinse, propuneri de
+  angajare;
+- **Proiecte:** taskurile cu stare, iterații, teste, tokeni; click pe un task arată echipa,
+  avertismentele, ultimul review și istoricul;
+- **Echipa** pe departamente, cu skill pack-uri, veto și câte taskuri a terminat fiecare șef;
+- **Activitatea recentă** din audit (doar evenimentele, fără prompturi sau cod).
+
+Ascultă doar pe `127.0.0.1` (datele includ prompturi, cod și costuri).
 
 ## Reutilizare la alt proiect
 

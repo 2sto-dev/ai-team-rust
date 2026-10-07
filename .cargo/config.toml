@@ -1,0 +1,6 @@
+# Windows GNU toolchain: link with MSYS2 UCRT64's gcc in every shell (cmd, PowerShell,
+# Git Bash), whether or not C:\msys64\ucrt64\bin is on PATH. Without it, rustc falls back to
+# its bundled linker, whose old libpthread lacks `nanosleep64` (needed by aws-lc-sys built
+# against the UCRT64 headers). A clean build still needs dlltool on PATH (see CLAUDE.md).
+[target.x86_64-pc-windows-gnu]
+linker = "C:/msys64/ucrt64/bin/gcc.exe"

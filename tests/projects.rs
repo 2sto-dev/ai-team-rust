@@ -570,3 +570,34 @@ async fn budget_stops_new_tasks_and_kpis_count_the_work() {
     assert_eq!(report.by_builder.len(), 1);
     assert!(report.overall.done_usage.input_tokens > 0);
 }
+
+#[tokio::test]
+async fn dashboard_snapshot_shows_projects_kpis_team_and_activity() {
+    let env = env();
+    planned(&env, 3).await;
+    let orchestrator = env.orchestrator(test_providers());
+    ProjectManager::new(&env.store, &orchestrator)
+        .run("shop", None)
+        .await
+        .unwrap();
+
+    let snapshot = ai_team::dashboard::snapshot(&ai_team::dashboard::Sources {
+        data_dir: env.root.join("data"),
+        employees_dir: env.company.join("employees"),
+        audit_dir: env.root.join("audit"),
+    })
+    .unwrap();
+
+    let project = &snapshot["projects"][0];
+    assert_eq!(project["id"], "shop");
+    assert_eq!(project["counts"]["total"], 3);
+    assert_eq!(project["counts"]["done"], 3);
+    assert_eq!(project["tasks"][0]["status"], "DONE");
+    assert!(project["tasks"][0]["history"].as_array().unwrap().len() > 3);
+    assert_eq!(snapshot["kpi"]["overall"]["done"], 3);
+    assert!(snapshot["team"]["employees"].as_array().unwrap().len() >= 5);
+    let activity = snapshot["activity"].as_array().unwrap();
+    assert!(!activity.is_empty());
+    // The feed carries events, never their payloads (prompts, files).
+    assert!(activity.iter().all(|event| event.get("payload").is_none()));
+}

@@ -21,14 +21,18 @@ use crate::{
 /// Planner proposals per `project plan` before giving up (each rejection is fed back).
 const MAX_TASK_PLAN_ATTEMPTS: u32 = 3;
 /// How much of a dependency's approved implementation is passed to a dependent task.
-const DEPENDENCY_CONTEXT_CHARS: usize = 6000;
+const DEPENDENCY_CONTEXT_CHARS: usize = 16_000;
 
 /// How much of the project's files a question sees.
-const QUESTION_SNAPSHOT_CHARS: usize = 24_000;
+const QUESTION_SNAPSHOT_CHARS: usize = 60_000;
+/// How much of the documents attached to a question the model sees (all of them together).
+/// With the project snapshot this stays under ~45k tokens of a 64k context.
+const ATTACHMENT_CHARS: usize = 100_000;
 
 const CONSULTANT_PROMPT: &str = "\
 You are the team's technical lead. The Owner asks a question about their project. Answer only \
-from the project files and task list you are given; say so when something is not there. Be \
+from the project files, task list and attached documents you are given; say so when something \
+is not there. Be \
 concise and concrete: name files and functions, and give exact commands (run from the project \
 folder). Do not write new code or propose a rewrite unless the Owner asks for it. Answer in the \
 language of the question.";
@@ -605,7 +609,51 @@ impl<'a> ProjectManager<'a> {
     /// Answers the Owner's question about a project from its files and tasks. Read-only: no
     /// task is created, nothing is committed and no file changes.
     pub async fn ask(&self, project_id: &str, question: &str) -> Result<String> {
+        self.ask_with(Some(project_id), question, &[]).await
+    }
+
+    /// A question with documents attached for this question only (`(name, text)`): they are
+    /// put in the prompt, never saved. Without a project the answer comes from the documents
+    /// alone.
+    pub async fn ask_with(
+        &self,
+        project_id: Option<&str>,
+        question: &str,
+        attachments: &[(String, String)],
+    ) -> Result<String> {
         anyhow::ensure!(!question.trim().is_empty(), "the question is empty");
+        anyhow::ensure!(
+            project_id.is_some() || !attachments.is_empty(),
+            "choose a project or attach a document"
+        );
+        let mut documents = String::new();
+        let mut left = ATTACHMENT_CHARS;
+        for (name, text) in attachments {
+            let shown: String = text.chars().take(left).collect();
+            left -= shown.chars().count();
+            let cut = shown.chars().count() < text.chars().count();
+            let _ = write!(
+                documents,
+                "\n--- {name}{}:\n{shown}\n",
+                if cut { " (truncated)" } else { "" }
+            );
+        }
+        let documents = if documents.is_empty() {
+            String::new()
+        } else {
+            format!("\n\nDOCUMENTS THE OWNER ATTACHED TO THIS QUESTION:{documents}")
+        };
+
+        let Some(project_id) = project_id else {
+            let prompt = format!("{documents}\n\nOWNER'S QUESTION:\n{question}\n");
+            let answer = self
+                .orchestrator
+                .consultant()?
+                .complete(CONSULTANT_PROMPT, prompt.trim_start())
+                .await;
+            self.orchestrator.take_usage(); // no project to bill
+            return answer;
+        };
         let project = self.store.project(project_id)?.config;
         let files = self
             .repository(&project)?
@@ -616,7 +664,7 @@ impl<'a> ProjectManager<'a> {
         }
         let prompt = format!(
             "PROJECT: {}\n\nOBJECTIVE (the Owner's first request):\n{}\n\nTASKS:\n{}\n\
-             TEST COMMAND (run from the project folder): {}\n\nPROJECT FILES:\n{files}\n\n\
+             TEST COMMAND (run from the project folder): {}\n\nPROJECT FILES:\n{files}{documents}\n\n\
              OWNER'S QUESTION:\n{question}\n",
             project.name,
             project.objective,

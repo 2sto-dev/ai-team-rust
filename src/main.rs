@@ -7,8 +7,8 @@ use std::{
 use ai_team::{
     audit::hr_audit_dir,
     config::{CLAUDE_DEFAULT_API_KEY_ENV, ModelConfig, ProviderKind, load_project},
-    domain::ProjectConfig,
     orchestrator::Orchestrator,
+    owner::{self, normalize_project_name},
     project::{ProjectManager, ProjectSettings, ProjectStatus, Store},
     registry::{
         self, EmployeeFunction, EmployeeStatus, EmployeeType, HireRequest, OWNER, Registry,
@@ -51,6 +51,18 @@ enum Commands {
         /// Continue an existing project instead of starting a new one.
         #[arg(long)]
         project: Option<String>,
+    },
+
+    /// Read-only web dashboard on 127.0.0.1: projects, tasks, KPIs, team, activity.
+    Dashboard {
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+    },
+
+    /// Web interface on 127.0.0.1: the dashboard plus every Owner action of the CLI.
+    Web {
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
     },
 
     /// KPIs of the AI employees, over all projects or one.
@@ -266,6 +278,19 @@ async fn main() -> Result<()> {
             json,
         } => run(&employees_dir, project, task, json).await,
         Commands::Console { project } => owner_console(&employees_dir, &cli.data, project).await,
+        Commands::Dashboard { port } | Commands::Web { port } => {
+            let writable = matches!(cli.command, Commands::Web { .. });
+            ai_team::web::serve(
+                ai_team::dashboard::Sources {
+                    data_dir: cli.data.clone(),
+                    employees_dir: employees_dir.clone(),
+                    audit_dir: ai_team::audit::default_audit_dir(),
+                },
+                port,
+                writable,
+            )
+            .await
+        }
         Commands::Kpi { project } => {
             let store = Store::open(&cli.data)?;
             let report = ai_team::kpi::collect(&store, project.as_deref())?;
@@ -350,11 +375,11 @@ async fn doctor(employees_dir: &Path, offline: bool) -> Result<()> {
             (None, _) => None,
         };
         if let Some(env_name) = env_name
-            && std::env::var(env_name).is_err()
+            && !std::env::var(env_name).is_ok_and(|key| !key.trim().is_empty())
         {
             problems += 1;
             println!(
-                "ERROR: {} expects environment variable {env_name}",
+                "ERROR: {} needs an API key: set {env_name} in .env",
                 employee.id()
             );
         }
@@ -987,78 +1012,6 @@ async fn tasks(employees_dir: &Path, data_dir: &Path, action: TaskAction) -> Res
 // Owner request: a prompt plus files, straight to the team
 // ---------------------------------------------------------------------------
 
-const PREVIEW_LINES: usize = 40;
-const PREVIEW_CHARS: usize = 3000;
-
-/// What every agent sees of the Owner's files: names, sizes and the start of text files.
-fn inputs_preview(files: &[PathBuf]) -> Result<String> {
-    let mut preview = String::new();
-    for file in files {
-        let bytes =
-            std::fs::read(file).with_context(|| format!("cannot read {}", file.display()))?;
-        let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-        preview.push_str(&format!("\n--- inputs/{name} ({} bytes)", bytes.len()));
-        match String::from_utf8(bytes) {
-            Ok(text) => {
-                let head: String = text
-                    .lines()
-                    .take(PREVIEW_LINES)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .chars()
-                    .take(PREVIEW_CHARS)
-                    .collect();
-                let cut = head.len() < text.trim_end().len();
-                preview.push_str(&format!(
-                    ":\n{head}{}\n",
-                    if cut {
-                        "\n[... rest of the file is in the workspace ...]"
-                    } else {
-                        ""
-                    }
-                ));
-            }
-            Err(_) => preview.push_str(": binary file\n"),
-        }
-    }
-    Ok(preview)
-}
-
-/// A project name chosen by the Owner, as an id: lowercase, digits and '-'.
-fn normalize_project_name(name: &str) -> Result<String> {
-    let id: String = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    anyhow::ensure!(
-        !id.is_empty() && id.len() <= 40,
-        "project name must have 1-40 letters or digits"
-    );
-    Ok(id)
-}
-
-fn project_id_from(prompt: &str) -> String {
-    let words: Vec<String> = prompt
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|word| word.len() > 1)
-        .take(4)
-        .map(str::to_lowercase)
-        .collect();
-    let stem: String = words.join("-").chars().take(30).collect();
-    let suffix = &uuid::Uuid::new_v4().simple().to_string()[..4];
-    if stem.is_empty() {
-        format!("request-{suffix}")
-    } else {
-        format!("{stem}-{suffix}")
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn owner_request(
     employees_dir: &Path,
@@ -1071,83 +1024,33 @@ async fn owner_request(
     plan: bool,
     yes: bool,
 ) -> Result<String> {
-    anyhow::ensure!(!prompt.trim().is_empty(), "the prompt is empty");
-    for file in &files {
-        anyhow::ensure!(file.is_file(), "not a file: {}", file.display());
-    }
     let store = Store::open(data_dir)?;
     let orchestrator = Orchestrator::from_registry(Registry::load(employees_dir)?)?;
     let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
-    let preview = inputs_preview(&files)?;
-
-    let project_id = match project_id {
-        Some(id) => {
-            store.project(&id)?;
-            anyhow::ensure!(!plan, "--plan only works for a new project");
-            if test_command.is_some() {
-                manager.configure(
-                    &id,
-                    ProjectSettings {
-                        test_command,
-                        ..ProjectSettings::default()
-                    },
-                )?;
-            }
-            id
-        }
-        None => {
-            if test_command.is_none() {
-                println!("{NO_TESTS_WARNING}");
-            }
-            let id = match new_project_name {
-                Some(name) => {
-                    let id = normalize_project_name(&name)?;
-                    anyhow::ensure!(
-                        store.project(&id).is_err(),
-                        "project {id} already exists; continue it with --project {id}"
-                    );
-                    id
-                }
-                None => project_id_from(&prompt),
-            };
-            let mut objective = prompt.trim().to_string();
-            if !preview.is_empty() {
-                objective.push_str(&format!(
-                    "\n\nFILES PROVIDED BY THE OWNER (copied to inputs/ in the workspace):{preview}"
-                ));
-            }
-            let config = ProjectConfig {
-                project_id: id.clone(),
-                name: prompt
-                    .lines()
-                    .next()
-                    .unwrap_or("Owner request")
-                    .chars()
-                    .take(60)
-                    .collect(),
-                objective,
-                max_iterations: 3,
-                max_architecture_revisions: 1,
-                rules: vec![
-                    "Work from the Owner's request and the provided files only.".to_string(),
-                    "Do not claim tests passed: the platform runs them.".to_string(),
-                ],
-                acceptance_criteria: vec!["The Owner's request is fully satisfied.".to_string()],
-                assigned_team: None,
-                test_command: test_command.filter(|command| !command.trim().is_empty()),
-                test_timeout_secs: 300,
-                remote_url: None,
-                budget: None,
-            };
-            store.add_project(&config)?;
-            println!("Project {id} created.");
-            id
-        }
+    if project_id.is_none() && test_command.is_none() {
+        println!("{NO_TESTS_WARNING}");
+    }
+    anyhow::ensure!(
+        !plan || project_id.is_none(),
+        "--plan only works for a new project"
+    );
+    let request = owner::NewRequest {
+        prompt: prompt.clone(),
+        files,
+        project_id,
+        new_project_name,
+        test_command,
     };
-
-    let inputs = manager.add_inputs(&project_id, &files)?;
-    if !inputs.is_empty() {
-        println!("Files committed to the project: {}", inputs.join(", "));
+    let prepared = owner::prepare(&store, &manager, &request)?;
+    let project_id = prepared.project_id.clone();
+    if prepared.created {
+        println!("Project {project_id} created.");
+    }
+    if !prepared.inputs.is_empty() {
+        println!(
+            "Files committed to the project: {}",
+            prepared.inputs.join(", ")
+        );
     }
 
     if plan {
@@ -1172,19 +1075,7 @@ async fn owner_request(
         }
         manager.approve(&project_id, Some("approved with the request"))?;
     } else {
-        // An existing project gets the file preview in the task itself.
-        let request = if inputs.is_empty()
-            || store
-                .project(&project_id)?
-                .config
-                .objective
-                .contains(&preview)
-        {
-            prompt.clone()
-        } else {
-            format!("{}\n\nFILES PROVIDED BY THE OWNER:{preview}", prompt.trim())
-        };
-        let task = manager.add_request(&project_id, &request, &inputs)?;
+        let task = owner::add_request_task(&store, &manager, &request, &prepared)?;
         println!("Task {} created: {}", task.id, task.title);
     }
 

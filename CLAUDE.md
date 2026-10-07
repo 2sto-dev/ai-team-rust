@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 and 5a are implemented, and phase 6 is in progress (stabilization, budgets, KPIs, specialists and hiring suggestions done). Phase 5a covers subagents, skill packs, MCP and the veto. Phase 5b (a Python Worker Gateway) is deliberately on hold until a specialist needs more than MCP tool calls: long runs, state kept between tasks, progress streaming or another machine. Until then, connect Python specialists as MCP servers (see `firma.md`, phase 5). The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
+`ai-team` is a Rust CLI (edition 2024, tokio) for a reusable "AI software company": the Owner (human) gives projects, and an orchestrator runs Planner → Architect → Builder ⇄ Reviewer. Employees are defined as files in `company/employees/`. `firma.md` is the phased plan (Romanian); phases 1–4 and 5a are implemented, and phase 6 is in progress (stabilization, budgets, KPIs, specialists, hiring suggestions, dashboard and web interface done). Phase 5a covers subagents, skill packs, MCP and the veto. Phase 5b (a Python Worker Gateway) is deliberately on hold until a specialist needs more than MCP tool calls: long runs, state kept between tasks, progress streaming or another machine. Until then, connect Python specialists as MCP servers (see `firma.md`, phase 5). The README and `firma.md` are in Romanian. Code, prompts, job descriptions and identifiers are in English.
 
 ## Commands
 
-- **Windows toolchain gotcha:** the active toolchain is `stable-x86_64-pc-windows-gnu`. It needs `dlltool.exe` from MSYS2 (`C:\msys64\ucrt64\bin`) on `PATH`, otherwise `getrandom`/`windows-sys` fail to compile. If a shell lacks it: `$env:Path = "C:\msys64\ucrt64\bin;$env:Path"`.
+- **Windows toolchain gotcha:** the active toolchain is `stable-x86_64-pc-windows-gnu`. It needs `dlltool.exe` from MSYS2 (`C:\msys64\ucrt64\bin`) on `PATH`, otherwise `getrandom`/`windows-sys` fail to compile. If a shell lacks it: `$env:Path = "C:\msys64\ucrt64\bin;$env:Path"`. `.cargo/config.toml` pins the linker to `C:/msys64/ucrt64/bin/gcc.exe`, so incremental builds link in any shell (cmd, PowerShell, Git Bash). Without the pin, rustc's bundled linker fails with `undefined reference to nanosleep64` from aws-lc-sys. Compiling the dependencies from scratch still needs dlltool on PATH. Avoid `[env]` overrides there: changing them invalidates every dependency.
 - Build / lint / format: `cargo build`, `cargo clippy --all-targets`, `cargo fmt`
 - Test: `cargo test`. Single test: `cargo test --test registry rejects_invalid_contracts`
 - CLI (global `--company <dir>`, default `company`):
@@ -24,6 +24,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - `task show <id>`
     - Owner decisions: `task resume <id> [--note] [--iterations N]`, `task accept <id>`, `task cancel <id>`
     - `project configure <id> [--test-command "..."] [--test-timeout N] [--remote <url>] [--budget-tokens N] [--budget-usd X]` (`ProjectSettings`; 0 removes a budget limit)
+    - `web [--port 8787]` / `dashboard [--port 8787]`: the Owner's web page on 127.0.0.1 (`src/web.rs` server, `src/dashboard.rs` snapshot, `src/dashboard.html` embedded with `include_str!`). `web` adds every CLI action; `dashboard` is read-only.
+      - A hand-rolled HTTP/1.1 loop on tokio `TcpListener` (Content-Length bodies up to 40 MB); no web framework.
+      - `dashboard::snapshot` re-reads the store, the registry, `company/proposals/` and the newest audit files on every request. The activity feed strips payloads.
+      - Security:
+        - every request must carry `Host` `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding);
+        - `POST /api/<action>` needs `X-AI-Team-Token`, a random token substituted into the page at startup (`__AI_TEAM_TOKEN__`); a foreign `Origin` is refused;
+        - `dashboard` mode serves no token and refuses every action.
+      - Actions (`web::act`):
+        - background jobs, one at a time with 409 when busy: `request` (files arrive base64 in JSON and are written to `data/uploads/<uuid>/` and removed after `owner::prepare`), `run`, `resume`, `plan`;
+        - read-only GETs, allowed in `dashboard` mode too: `/api/files?project=` and `/api/file?project=&path=`. They serve only paths `Workspace::files` lists, after `validate_path`, up to 512 KB of text.
+        - synchronous: `ask` (optional `files`: text documents passed to `ProjectManager::ask_with` for this question only, never saved; works without a project), `accept`, `cancel`, `approve`, `configure`, `add_project` (`config::parse_project`), `hire_check`, `hire_approve`, `set_status`.
+      - The team's futures are not `Send`, so jobs run in `spawn_blocking` with their own current-thread runtime.
+      - The page skips redrawing a form the Owner is typing in and keeps unsent text in `drafts`.
+      - Styling is Tailwind CSS v4: `web/input.css` (theme plus `.card`, `.btn`, `.field`, `.pill` components) compiles with `npm run css` into the committed `src/dashboard.css`. The page inlines it in place of `/*__AI_TEAM_CSS__*/`, so there is no CDN and it works offline.
+        - After changing classes in `src/dashboard.html`, rerun `npm run css`, otherwise new utilities are missing.
+        - Classes built in JS must be literal strings (`TONE`, `STATUS_TONE`), so Tailwind's scanner sees them.
+    - `src/owner.rs` holds the request logic shared by `request`, the console and the web: `prepare` (creates or checks the project, commits files to `inputs/`) and `add_request_task`.
     - `kpi [--project ID]`: employee KPIs (`src/kpi.rs`, firma.md §18) from stored task states and Owner decisions.
     - `console [--project ID]` is the interactive Owner console (`owner_console` in `main.rs`).
       - You type a multi-line request (an empty line sends it), then file paths (quotes from Windows drag-and-drop are stripped) and a test command for a new project.
@@ -74,11 +91,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - A truncated answer is a fatal, non-retried error in every dialect: Ollama `done_reason: length`, OpenAI `finish_reason: length`, Claude `stop_reason: max_tokens`. A real run showed a 4B Reviewer approving a cut-off implementation, so don't relax this.
   - `ModelConfig::validate` rejects options the chosen provider would ignore.
   - Agents get their backends from a `ProviderFactory`. `Orchestrator::from_registry` uses `http_providers()`; tests call `from_registry_with_providers(registry, test_providers())`.
-  - The shipped `company/` points at Ollama on `http://10.10.0.14:11434`: Planner, Architect and Builder use `qwen3-coder:30b`, the Reviewer uses `qwen2.5:14b`, all with `num_ctx` 32768. `run` needs that server. Tests never touch the network.
+  - The shipped `company/` points at Ollama on `http://10.10.0.14:11434`: Planner, Architect and Builder use `qwen3-coder:30b`, the Reviewer and Security use `qwen2.5:14b`. Every `qwen3-coder` employee has `num_ctx` 65536; the Reviewer and Security have 32768, which is `qwen2.5:14b`'s maximum. `run` needs that server. Tests never touch the network.
   - An iteration is counted only after the Builder delivers (`orchestrator.rs`), so a failed or truncated Builder call does not use up a task's budget.
   - The Builder and Architect job descriptions carry a "Size and focus" section (about 2,500 / 2,000 words, no boilerplate). Without it, `qwen3-coder` wrote full Java classes and revisions overflowed even 8192 tokens.
   - `num_predict` is 8192 for Architect/Builder, 4096 for Planner and 1200 for Reviewer. 4096 was too small: on a real project task, the Builder's second iteration (full rewrite plus fixes) was cut off.
-  - Keep `num_ctx` at 32768 or lower: at 65536 `qwen3-coder:30b` spills out of the GPU and drops from about 147 to about 7 tok/s.
+  - `num_ctx` on that server, measured 2026-10-07 (24 GB GPU):
+    - 49152 fits fully in VRAM at about 151 tok/s.
+    - 65536 is 98% in VRAM at about 94 tok/s on short prompts. A 34k-token prompt is read at about 1,900 tok/s and generates at about 70 tok/s.
+    - (An earlier server setup dropped to 7 tok/s at 65536.)
+    - Keep one `num_ctx` value for every employee on the same model, because Ollama reloads the model whenever it changes.
+  - Context overflow is fatal, like output truncation, because Ollama silently drops the beginning of a too-long prompt, system prompt included. `check_prompt_fits` refuses a prompt that needs more than `num_ctx - num_predict` tokens (counted at 4 chars per token, so it underestimates), and a reply whose `prompt_eval_count` filled that room is an error.
+  - Platform input budgets are sized for 64k: workspace snapshot 80k chars (`workbench.rs`), question snapshot 60k plus attachments 100k (`manager.rs`), dependency context 16k, and input preview 12k (`owner.rs`; every agent sees it, the 32k Reviewer too).
   - Thinking models (`qwen3:4b`, `qwen3.6`) currently return invalid JSON, because thinking consumes `num_predict`.
 - `ModelConfig` (`src/config.rs`) is the `model:` block of a contract. Projects are `projects/*.json`.
 

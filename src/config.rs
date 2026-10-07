@@ -161,8 +161,12 @@ pub fn load_project(path: impl AsRef<Path>) -> Result<ProjectConfig> {
     let path = path.as_ref();
     let raw = fs::read_to_string(path)
         .with_context(|| format!("cannot read project config: {}", path.display()))?;
-    let project: ProjectConfig = serde_json::from_str(&raw)
-        .with_context(|| format!("invalid project JSON: {}", path.display()))?;
+    parse_project(&raw).with_context(|| format!("invalid project config: {}", path.display()))
+}
+
+/// A project definition as JSON (a `projects/*.json` file, or pasted in the web interface).
+pub fn parse_project(raw: &str) -> Result<ProjectConfig> {
+    let project: ProjectConfig = serde_json::from_str(raw).context("invalid project JSON")?;
 
     anyhow::ensure!(
         project.max_iterations > 0,

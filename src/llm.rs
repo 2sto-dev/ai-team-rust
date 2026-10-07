@@ -653,6 +653,19 @@ impl HttpChatProvider {
                         limit_note(self.num_predict)
                     )));
                 }
+                // A prompt that filled the context was truncated by Ollama (it keeps the end).
+                if let (Some(num_ctx), Some(prompt)) =
+                    (self.num_ctx, parsed["prompt_eval_count"].as_u64())
+                {
+                    let room =
+                        u64::from(num_ctx).saturating_sub(u64::from(self.num_predict.unwrap_or(0)));
+                    if prompt >= room {
+                        return Err(AttemptError::fatal(anyhow!(
+                            "prompt filled the context ({prompt} tokens, num_ctx {num_ctx}); Ollama \
+                             dropped its beginning. Raise num_ctx in the contract or send less input"
+                        )));
+                    }
+                }
                 let message = &parsed["message"];
                 let calls: Vec<ToolCall> = message["tool_calls"]
                     .as_array()
@@ -786,6 +799,37 @@ fn strip_reasoning(content: &str) -> String {
     }
 }
 
+/// Tokens a prompt certainly needs: about 4 characters per token for English and code (fewer
+/// for Romanian), so this underestimates and only flags prompts that cannot fit.
+const CHARS_PER_TOKEN_UPPER: usize = 4;
+
+impl HttpChatProvider {
+    /// Ollama keeps only the end of a prompt longer than `num_ctx`, silently dropping the
+    /// system prompt and instructions. Refuse such prompts instead of sending them.
+    fn check_prompt_fits(&self, system_prompt: &str, messages: &[ChatMessage]) -> Result<()> {
+        let Some(num_ctx) = self.num_ctx else {
+            return Ok(());
+        };
+        let chars = system_prompt.chars().count()
+            + messages
+                .iter()
+                .map(|message| match message {
+                    ChatMessage::User(text) => text.chars().count(),
+                    ChatMessage::Assistant { text, .. } => text.chars().count(),
+                    ChatMessage::Tool { content, .. } => content.chars().count(),
+                })
+                .sum::<usize>();
+        let room = (num_ctx as usize).saturating_sub(self.num_predict.unwrap_or(0) as usize);
+        let tokens = chars / CHARS_PER_TOKEN_UPPER;
+        anyhow::ensure!(
+            tokens <= room,
+            "prompt too large for the model's context: at least {tokens} tokens, but num_ctx {num_ctx} \
+             leaves {room} after num_predict; raise num_ctx in the contract or send less input"
+        );
+        Ok(())
+    }
+}
+
 impl LlmProvider for HttpChatProvider {
     fn model_name(&self) -> &str {
         &self.model
@@ -813,10 +857,17 @@ impl LlmProvider for HttpChatProvider {
         tools: &'a [ToolSpec],
     ) -> BoxFuture<'a, Result<ChatTurn>> {
         Box::pin(async move {
+            self.check_prompt_fits(system_prompt, messages)?;
             let api_key = match &self.api_key_env {
-                Some(env_name) => Some(std::env::var(env_name).with_context(|| {
-                    format!("missing API key environment variable: {env_name}")
-                })?),
+                // An empty `KEY=` line in .env is a missing key, not an empty one.
+                Some(env_name) => Some(
+                    std::env::var(env_name)
+                        .ok()
+                        .filter(|key| !key.trim().is_empty())
+                        .with_context(|| {
+                            format!("missing API key: set {env_name} in .env (see .env.example)")
+                        })?,
+                ),
                 None => None,
             };
 

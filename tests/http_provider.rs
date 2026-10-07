@@ -284,3 +284,40 @@ async fn truncated_answers_are_errors_in_every_dialect() {
     assert!(format!("{err:#}").contains("cut off at max_tokens"));
     assert_eq!(hits.load(Ordering::SeqCst), 1, "truncation is not retried");
 }
+
+#[tokio::test]
+async fn prompts_that_overflow_the_context_are_errors() {
+    // Too long to fit at all: refused before anything is sent.
+    let (origin, hits, _requests) = serve_capturing(vec![]).await;
+    let mut config = fast_model("qwen3-coder:30b");
+    config.provider = ProviderKind::Ollama;
+    config.base_url = Some(origin);
+    config.num_ctx = Some(2048);
+    config.num_predict = Some(1024);
+    let provider = provider_for(&config).unwrap();
+    let error = provider
+        .generate("sys", &"x".repeat(20_000))
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("prompt too large"),
+        "{error:#}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+    // Ollama reports a prompt that filled the context: it was truncated.
+    let reply = serde_json::json!({
+        "message": {"role": "assistant", "content": "ok"},
+        "done": true, "done_reason": "stop",
+        "prompt_eval_count": 1024, "eval_count": 3
+    });
+    let (origin, _hits, _requests) =
+        serve_capturing(vec![Reply::Status(200, reply.to_string())]).await;
+    config.base_url = Some(origin);
+    let provider = provider_for(&config).unwrap();
+    let error = provider.generate("sys", "short").await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("prompt filled the context"),
+        "{error:#}"
+    );
+}

@@ -666,3 +666,32 @@ async fn owner_questions_are_answered_without_changing_anything() {
     assert_eq!(env.git(&["rev-parse", "HEAD"]), head);
     assert_eq!(env.store.tasks("app").unwrap().len(), tasks_before);
 }
+
+#[tokio::test]
+async fn questions_can_carry_documents_without_a_project() {
+    let env = env();
+    let architect = ScriptedProvider::new(["The plan backs up the shop database nightly."]);
+    let orchestrator = env.orchestrator(with_architect(architect.clone()));
+    let manager = ProjectManager::new(&env.store, &orchestrator);
+    let attachments = [(
+        "backup.md".to_string(),
+        "# Backup\nDatabase `shop` nightly at 02:00.".to_string(),
+    )];
+
+    let answer = manager
+        .ask_with(None, "Explain the document.", &attachments)
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "The plan backs up the shop database nightly.");
+    let prompt = &architect.prompts()[0];
+    assert!(
+        prompt.contains("DOCUMENTS THE OWNER ATTACHED TO THIS QUESTION"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("--- backup.md:\n# Backup"), "{prompt}");
+    assert!(prompt.contains("Explain the document."), "{prompt}");
+    // Nothing was created or saved.
+    assert!(env.store.projects().unwrap().is_empty());
+    assert!(manager.ask_with(None, "Explain.", &[]).await.is_err());
+}

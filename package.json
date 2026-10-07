@@ -1,0 +1,13 @@
+{
+  "name": "ai-team-web",
+  "private": true,
+  "description": "Builds the Tailwind CSS embedded in the ai-team web interface (src/dashboard.css).",
+  "scripts": {
+    "css": "tailwindcss -i web/input.css -o src/dashboard.css --minify",
+    "css:watch": "tailwindcss -i web/input.css -o src/dashboard.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}
