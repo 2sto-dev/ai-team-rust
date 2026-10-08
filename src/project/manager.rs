@@ -62,6 +62,8 @@ pub struct ProjectSettings {
     pub budget_tokens: Option<u64>,
     /// 0 removes the limit.
     pub budget_usd: Option<f64>,
+    /// Rules appended to the project's rules (every agent sees them); duplicates are skipped.
+    pub add_rules: Vec<String>,
 }
 
 /// What `ProjectManager::delete_project` removed.
@@ -123,6 +125,12 @@ impl<'a> ProjectManager<'a> {
         self.store
     }
 
+    /// True when the team is staffed from the registry but no planner is active: nothing can
+    /// pick a team or plan tasks, so a new project would only be left empty.
+    pub fn planner_missing(&self) -> bool {
+        self.orchestrator.registry().is_some() && self.orchestrator.planner().is_none()
+    }
+
     /// The project's git repository (`<data>/workspaces/<project>`); `main` holds approved work.
     pub fn main_workspace(&self, project_id: &str) -> PathBuf {
         self.store.root().join("workspaces").join(project_id)
@@ -181,17 +189,24 @@ impl<'a> ProjectManager<'a> {
             }
             config.budget = (!budget.is_empty()).then_some(budget);
         }
+        for rule in settings.add_rules {
+            let rule = rule.trim().to_string();
+            if !rule.is_empty() && !config.rules.contains(&rule) {
+                config.rules.push(rule);
+            }
+        }
         self.store.update_project_config(&config)?;
         self.store.add_owner_decision(
             project_id,
             None,
             "configure",
             Some(&format!(
-                "test_command={:?}, test_timeout_secs={}, remote_url={:?}, budget={}",
+                "test_command={:?}, test_timeout_secs={}, remote_url={:?}, budget={}, rules={}",
                 config.test_command,
                 config.test_timeout_secs,
                 config.remote_url,
-                config.budget.clone().unwrap_or_default()
+                config.budget.clone().unwrap_or_default(),
+                config.rules.len()
             )),
         )?;
         Ok(config)
@@ -267,9 +282,17 @@ impl<'a> ProjectManager<'a> {
     /// and stores it as pending. Nothing runs until the Owner approves it.
     pub async fn plan(&self, project_id: &str, note: Option<&str>) -> Result<TaskPlan> {
         let project = self.store.project(project_id)?;
+        let previous = self.store.pending_plan_note(project_id)?;
+        let note = match (previous, note.filter(|n| !n.trim().is_empty())) {
+            (Some(previous), Some(note)) => {
+                Some(format!("{previous}\n\nOWNER'S REVISION:\n{note}"))
+            }
+            (Some(previous), None) => Some(previous),
+            (None, note) => note.map(str::to_owned),
+        };
         anyhow::ensure!(
-            project.status == ProjectStatus::Planning,
-            "project {project_id} already has an approved plan"
+            project.status == ProjectStatus::Planning || note.is_some(),
+            "an existing project needs a new request to plan"
         );
         let planner = self
             .orchestrator
@@ -281,8 +304,28 @@ impl<'a> ProjectManager<'a> {
             .context("project planning needs an orchestrator built from the registry")?;
         let team = candidates(registry);
 
+        let mut config = project.config.clone();
+        let existing = self.store.tasks(project_id)?;
+        if !existing.is_empty() {
+            let mut context = String::new();
+            for task in &existing {
+                let _ = writeln!(context, "- {} [{}] {}", task.id, task.status, task.title);
+            }
+            config.objective = format!(
+                "PROJECT BACKGROUND (do not plan it again):\n{}\n\nEXISTING TASKS:\n{context}\n\
+                 Plan ONLY the new Owner request below as additional milestones. Preserve approved work. \
+                 Use task keys and dependencies only within this new proposal.\n\nNEW OWNER REQUEST:\n{}",
+                project.config.objective,
+                note.as_deref().unwrap_or_default()
+            );
+        }
+        let workspace = self.repository(&project.config)?;
+        let snapshot = workspace.snapshot(QUESTION_SNAPSHOT_CHARS)?;
+        config
+            .objective
+            .push_str(&format!("\n\nCURRENT PROJECT FILES:\n{snapshot}"));
         let outcome = self
-            .plan_attempts(project_id, &project.config, planner, &team, note)
+            .plan_attempts(project_id, &config, planner, &team, note.as_deref())
             .await;
         self.store
             .add_planning_usage(project_id, &self.orchestrator.take_usage())?;
@@ -326,21 +369,18 @@ impl<'a> ProjectManager<'a> {
     /// Owner approval of the pending plan: creates the milestones and tasks.
     pub fn approve(&self, project_id: &str, note: Option<&str>) -> Result<Vec<TaskRecord>> {
         let project = self.store.project(project_id)?;
-        anyhow::ensure!(
-            project.status == ProjectStatus::Planning,
-            "project {project_id} already has an approved plan"
-        );
         let plan = self
             .store
             .pending_plan(project_id)?
             .context("no proposed plan; run `project plan` first")?;
         let ordered = validate_plan(&plan)?;
 
-        self.store
-            .approve_plan(project_id, &plan, &ordered, project.config.max_iterations)?;
+        let ids =
+            self.store
+                .approve_plan(project_id, &plan, &ordered, project.config.max_iterations)?;
         self.store
             .add_owner_decision(project_id, None, "approve_plan", note)?;
-        self.store.tasks(project_id)
+        ids.iter().map(|id| self.store.task(id)).collect()
     }
 
     // -- execution ----------------------------------------------------------
@@ -349,6 +389,10 @@ impl<'a> ProjectManager<'a> {
     /// Interrupted tasks are resumed first.
     pub async fn run(&self, project_id: &str, max_tasks: Option<usize>) -> Result<RunSummary> {
         let project = self.store.project(project_id)?;
+        anyhow::ensure!(
+            self.store.pending_plan(project_id)?.is_none(),
+            "project {project_id} has a pending plan; approve it before execution"
+        );
         anyhow::ensure!(
             project.status != ProjectStatus::Planning,
             "project {project_id} has no approved plan; use `project plan` and `project approve`"

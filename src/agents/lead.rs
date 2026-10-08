@@ -1,7 +1,7 @@
 //! The Builder as a team lead: it splits an iteration into subtasks for its subagents, the
 //! control plane validates the split (known assignees, disjoint file ownership), each
 //! subagent works with only its subtask's context, and the platform combines their files.
-//! Without a usable split the lead does the work itself.
+//! With eligible executors, delegation is required; an invalid split never starts work.
 
 use std::{collections::HashSet, fmt::Write as _, sync::Arc};
 
@@ -14,7 +14,7 @@ use super::{
     builder::Builder,
     prompt::{parse_json_reply, project_context},
     specialist::Specialist,
-    tooling::answer,
+    tooling::plan_answer,
 };
 use crate::{
     BoxFuture,
@@ -173,18 +173,21 @@ impl BuilderLead {
         Ok(text)
     }
 
-    /// Asks for a split until the control plane accepts one; `None` means the lead works solo.
-    async fn plan(&self, ctx: &AgentContext, order: &WorkOrder) -> Result<Option<Vec<Subtask>>> {
+    /// Asks for a valid split. A lead with executors may not silently bypass delegation.
+    async fn plan(&self, ctx: &AgentContext, order: &WorkOrder) -> Result<Vec<Subtask>> {
         let team: Vec<&str> = self.team.iter().map(Specialist::name).collect();
         let base = format!(
             "{context}\nYOUR TEAM (subagents you may delegate to):\n{roster}\n\n\
              {DELEGATION_HEADING}\n\
-             Split this iteration into subtasks for your team, or do the work yourself.\n\
+             You are the department lead. Delegate this iteration to your executors.\n\
              Rules:\n\
              - At most {MAX_SUBTASKS} subtasks; each names one assignee from YOUR TEAM, a title, \
              precise instructions and the files it owns.\n\
              - Every file belongs to at most one subtask; a subagent may only write the files it owns.\n\
-             - Return {{\"subtasks\": []}} to do the work yourself.\n\n\
+             - Return at least one subtask; choose specialists whose skills match the work.\n\
+             - Cover the complete specification, including integration and tests.\n\
+             - Define shared interfaces in the instructions; executors work from the same baseline.\n\
+             - Do not implement files yourself during this planning call.\n\n\
              Return ONLY valid JSON:\n\
              {{\"subtasks\":[{{\"assignee\":\"EMP-...\",\"title\":\"...\",\"instructions\":\"...\",\"files\":[\"path\"]}}],\"rationale\":\"...\"}}\n",
             // Splitting needs file names, not contents.
@@ -201,11 +204,13 @@ impl BuilderLead {
                 None => base.clone(),
             };
             // The split is a JSON plan: tool schemas would only cost tokens here.
-            let raw = answer(self.llm.as_ref(), &self.system_prompt, &prompt, None, ctx).await?;
+            let raw = plan_answer(self.llm.as_ref(), &self.system_prompt, &prompt, ctx).await?;
             let reason = match parse_json_reply::<DelegationPlan>(&raw) {
-                Some(plan) if plan.subtasks.is_empty() => return Ok(None),
+                Some(plan) if plan.subtasks.is_empty() => {
+                    "delegate at least one subtask to an executor from YOUR TEAM".to_string()
+                }
                 Some(plan) => match validate_delegation(&plan.subtasks, &team) {
-                    Ok(subtasks) => return Ok(Some(subtasks)),
+                    Ok(subtasks) => return Ok(subtasks),
                     Err(reason) => reason,
                 },
                 None => "the reply is not the requested JSON".to_string(),
@@ -216,7 +221,10 @@ impl BuilderLead {
             )?;
             rejection = Some(reason);
         }
-        Ok(None)
+        anyhow::bail!(
+            "no valid delegation after {DELEGATION_ATTEMPTS} attempts: {}",
+            rejection.unwrap_or_default()
+        )
     }
 
     async fn delegate(
@@ -377,10 +385,7 @@ impl Agent for BuilderLead {
             if order.workspace.is_none() || self.team.is_empty() {
                 return self.solo.execute(ctx, order).await;
             }
-            let Some(subtasks) = self.plan(ctx, order).await? else {
-                ctx.record("DELEGATION_SKIPPED", &json!({ "lead": self.name }))?;
-                return self.solo.execute(ctx, order).await;
-            };
+            let subtasks = self.plan(ctx, order).await?;
             ctx.record("DELEGATION_PLANNED", &subtasks)?;
             let content = self.delegate(ctx, order, &subtasks).await?;
             Ok(AgentOutput::Artifact(Artifact {

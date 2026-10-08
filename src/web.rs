@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::watch,
 };
 
 use crate::{
@@ -59,7 +60,29 @@ pub struct Job {
 struct Jobs {
     next_id: u64,
     current: Option<Job>,
+    /// Signals the current job to stop (the Owner's "Oprește echipa").
+    stop: Option<watch::Sender<bool>>,
     recent: Vec<Job>,
+}
+
+/// The error a stopped job ends with.
+const STOPPED: &str = "stopped by the Owner";
+
+/// A job's view of the stop signal. Wrapping the team's future in `guard` makes a stop drop
+/// it: every model call and agent CLI is abandoned, and their process trees are killed
+/// (`KillTreeOnDrop`). Checkpoints are saved per step, so the task stays interrupted and the
+/// next run resumes it.
+#[derive(Clone)]
+struct Stop(watch::Receiver<bool>);
+
+impl Stop {
+    async fn guard<T>(&self, work: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+        let mut signal = self.0.clone();
+        tokio::select! {
+            result = work => result,
+            _ = signal.wait_for(|stopped| *stopped) => bail!("{STOPPED}"),
+        }
+    }
 }
 
 struct Server {
@@ -333,6 +356,10 @@ async fn handle(mut stream: TcpStream, server: &Arc<Server>) -> Result<()> {
                 }
             }
         }
+        ("GET", "/api/models") => {
+            let value = available_models(&server.sources).await;
+            respond_json(&mut stream, "200 OK", &value).await
+        }
         ("GET", "/api/files" | "/api/file") => {
             let sources = server.sources.clone();
             let params = parse_query(&request.query);
@@ -386,6 +413,10 @@ struct RequestAction {
     test_command: Option<String>,
     #[serde(default)]
     files: Vec<UploadedFile>,
+    /// New project only: the Planner splits the request into milestones and tasks, which
+    /// wait for the Owner's approval instead of running at once.
+    #[serde(default)]
+    plan: bool,
 }
 
 #[derive(Deserialize)]
@@ -483,6 +514,69 @@ fn summary_message(summary: &RunSummary) -> String {
     parts.join("; ")
 }
 
+fn plan_message(plan: &crate::project::plan::TaskPlan) -> String {
+    let tasks: usize = plan
+        .milestones
+        .iter()
+        .map(|milestone| milestone.tasks.len())
+        .sum();
+    format!(
+        "plan proposed: {} milestone(s), {tasks} task(s); approve it to start",
+        plan.milestones.len()
+    )
+}
+
+/// Ends the stopped run's audit trail with `RUN_STOPPED`: the dropped run never wrote its
+/// own end, and the page would keep showing its last step as live. Only a trail written
+/// since the job started is touched.
+fn audit_stop(sources: &Sources, started_unix_ms: u64) {
+    let started = UNIX_EPOCH + std::time::Duration::from_millis(started_unix_ms);
+    let newest = std::fs::read_dir(&sources.audit_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .filter(|(modified, _)| *modified >= started)
+        .max_by_key(|(modified, _)| *modified);
+    let Some((_, path)) = newest else { return };
+    let Some(run_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return;
+    };
+    if let Ok(trail) = crate::audit::AuditTrail::create(&sources.audit_dir, run_id) {
+        let _ = trail.record(
+            run_id,
+            &uuid::Uuid::new_v4().simple().to_string()[..16],
+            None,
+            "OWNER",
+            "RUN_STOPPED",
+            &json!({ "reason": STOPPED }),
+        );
+    }
+}
+
+/// Notes the stop on the task it interrupted (Owner decision `stop`) and says how to go on.
+fn record_stop(sources: &Sources, project_id: &str) -> Option<String> {
+    let store = Store::open(&sources.data_dir).ok()?;
+    let task = store
+        .tasks(project_id)
+        .ok()?
+        .into_iter()
+        .find(|task| task.status.is_interrupted())?;
+    store
+        .add_owner_decision(
+            project_id,
+            Some(&task.id),
+            "stop",
+            Some("stopped from the web interface"),
+        )
+        .ok()?;
+    Some(format!(
+        "{STOPPED}; {} stays interrupted and resumes with \"Rulează taskurile rămase\"",
+        task.id
+    ))
+}
+
 /// Starts a team run in the background; only one at a time.
 fn start_job<F>(
     server: &Arc<Server>,
@@ -491,8 +585,9 @@ fn start_job<F>(
     work: F,
 ) -> Result<Value>
 where
-    F: FnOnce(&Sources) -> Result<(Option<String>, String)> + Send + 'static,
+    F: FnOnce(&Sources, &Stop) -> Result<(Option<String>, String)> + Send + 'static,
 {
+    let (stop_sender, stop_receiver) = watch::channel(false);
     let job = {
         let mut jobs = server.jobs.lock().expect("jobs lock");
         if let Some(current) = &jobs.current {
@@ -517,17 +612,38 @@ where
             message: String::new(),
         };
         jobs.current = Some(job.clone());
+        jobs.stop = Some(stop_sender);
         job
     };
 
     let server = server.clone();
     let id = job.id;
     tokio::task::spawn_blocking(move || {
-        let outcome = work(&server.sources);
+        let outcome = work(&server.sources, &Stop(stop_receiver));
+        let stopped = matches!(&outcome, Err(err) if format!("{err:#}").ends_with(STOPPED));
+        let project_id = server
+            .jobs
+            .lock()
+            .expect("jobs lock")
+            .current
+            .as_ref()
+            .and_then(|job| job.project_id.clone());
+        if stopped {
+            audit_stop(&server.sources, job.started_unix_ms);
+        }
+        let note = match (stopped, &project_id) {
+            (true, Some(project_id)) => record_stop(&server.sources, project_id),
+            _ => None,
+        };
         let mut jobs = server.jobs.lock().expect("jobs lock");
+        jobs.stop = None;
         if let Some(mut job) = jobs.current.take() {
             job.finished_unix_ms = Some(now_ms());
             match outcome {
+                Err(_) if stopped => {
+                    job.status = "stopped".to_string();
+                    job.message = note.unwrap_or_else(|| STOPPED.to_string());
+                }
                 Ok((project_id, message)) => {
                     job.status = "done".to_string();
                     job.project_id = project_id.or(job.project_id);
@@ -575,14 +691,26 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
                     .test_command
                     .filter(|command| !command.trim().is_empty()),
             };
+            anyhow::ensure!(
+                !request.plan || new_request.project_id.is_none(),
+                "a plan split works only for a new project"
+            );
+            let plan = request.plan;
             let project = new_request.project_id.clone();
-            start_job(&server, "request", project, move |sources| {
+            start_job(&server, "request", project, move |sources, stop| {
                 let result = (|| {
                     let (store, orchestrator) = open(sources)?;
                     let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
                     let prepared = owner::prepare(&store, &manager, &new_request)?;
+                    if plan {
+                        let proposed = runtime()?.block_on(stop.guard(
+                            manager.plan(&prepared.project_id, Some(new_request.prompt.trim())),
+                        ))?;
+                        return Ok((Some(prepared.project_id.clone()), plan_message(&proposed)));
+                    }
                     let task = owner::add_request_task(&store, &manager, &new_request, &prepared)?;
-                    let summary = runtime()?.block_on(manager.run(&prepared.project_id, None))?;
+                    let summary =
+                        runtime()?.block_on(stop.guard(manager.run(&prepared.project_id, None)))?;
                     Ok((
                         Some(prepared.project_id.clone()),
                         format!("{} created; {}", task.id, summary_message(&summary)),
@@ -592,14 +720,32 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
                 result
             })
         }
+        "stop" => {
+            let mut jobs = server.jobs.lock().expect("jobs lock");
+            let Some(job) = jobs.current.as_mut() else {
+                bail!("the team is not working; nothing to stop");
+            };
+            job.message = "stopping...".to_string();
+            let kind = job.kind.clone();
+            if let Some(stop) = &jobs.stop {
+                let _ = stop.send(true);
+            }
+            Ok(json!({ "message": format!("stopping the team ({kind})") }))
+        }
         "run" => {
             let project_id = field(&body, "project_id")?;
-            start_job(&server, "run", Some(project_id.clone()), move |sources| {
-                let (store, orchestrator) = open(sources)?;
-                let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
-                let summary = runtime()?.block_on(manager.run(&project_id, None))?;
-                Ok((None, summary_message(&summary)))
-            })
+            start_job(
+                &server,
+                "run",
+                Some(project_id.clone()),
+                move |sources, stop| {
+                    let (store, orchestrator) = open(sources)?;
+                    let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
+                    let summary =
+                        runtime()?.block_on(stop.guard(manager.run(&project_id, None)))?;
+                    Ok((None, summary_message(&summary)))
+                },
+            )
         }
         "resume" => {
             let decision: TaskDecision =
@@ -617,11 +763,12 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
                 &server,
                 "resume",
                 Some(project_id.clone()),
-                move |sources| {
+                move |sources, stop| {
                     let (store, orchestrator) = open(sources)?;
                     let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
                     manager.resume_task(&decision.task_id, decision.note.as_deref(), iterations)?;
-                    let summary = runtime()?.block_on(manager.run(&project_id, None))?;
+                    let summary =
+                        runtime()?.block_on(stop.guard(manager.run(&project_id, None)))?;
                     Ok((None, summary_message(&summary)))
                 },
             )
@@ -629,23 +776,18 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
         "plan" => {
             let project_id = field(&body, "project_id")?;
             let note = optional(&body, "note");
-            start_job(&server, "plan", Some(project_id.clone()), move |sources| {
-                let (store, orchestrator) = open(sources)?;
-                let manager = ProjectManager::new(&store, &orchestrator);
-                let plan = runtime()?.block_on(manager.plan(&project_id, note.as_deref()))?;
-                let tasks: usize = plan
-                    .milestones
-                    .iter()
-                    .map(|milestone| milestone.tasks.len())
-                    .sum();
-                Ok((
-                    None,
-                    format!(
-                        "plan proposed: {} milestone(s), {tasks} task(s); approve it to start",
-                        plan.milestones.len()
-                    ),
-                ))
-            })
+            start_job(
+                &server,
+                "plan",
+                Some(project_id.clone()),
+                move |sources, stop| {
+                    let (store, orchestrator) = open(sources)?;
+                    let manager = ProjectManager::new(&store, &orchestrator);
+                    let plan = runtime()?
+                        .block_on(stop.guard(manager.plan(&project_id, note.as_deref())))?;
+                    Ok((None, plan_message(&plan)))
+                },
+            )
         }
         "ask" => {
             let project_id = optional(&body, "project_id");
@@ -678,37 +820,96 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
             let decision: TaskDecision =
                 serde_json::from_value(body).context("invalid decision")?;
             let action = action.to_string();
-            let task = blocking(move || {
-                let (store, orchestrator) = open(&sources)?;
-                let manager = ProjectManager::new(&store, &orchestrator);
-                let note = decision.note.as_deref();
-                let task = if action == "accept" {
-                    manager.accept_task(
-                        &decision.task_id,
-                        note.or(Some("accepted from the web interface")),
-                    )?
-                } else {
-                    manager.cancel_task(
-                        &decision.task_id,
-                        note.or(Some("cancelled from the web interface")),
-                    )?
-                };
-                Ok(format!("{} {}", task.id, task.status))
-            })
-            .await?;
-            Ok(json!({ "message": task }))
+            let (message, project_id, unblocked) = {
+                let sources = sources.clone();
+                blocking(move || {
+                    let (store, orchestrator) = open(&sources)?;
+                    let manager = ProjectManager::new(&store, &orchestrator);
+                    let before = store.task(&decision.task_id)?;
+                    let note = decision.note.as_deref();
+                    let task = if action == "accept" {
+                        manager.accept_task(
+                            &decision.task_id,
+                            note.or(Some("accepted from the web interface")),
+                        )?
+                    } else {
+                        manager.cancel_task(
+                            &decision.task_id,
+                            note.or(Some("cancelled from the web interface")),
+                        )?
+                    };
+                    Ok((
+                        format!("{} {}", task.id, task.status),
+                        task.project_id,
+                        // The team stopped to wait for this decision; cancelling a planned
+                        // task only removes it and starts nothing.
+                        before.status.needs_owner(),
+                    ))
+                })
+                .await?
+            };
+            // The decision unblocks the project: the team goes on with the next task, as
+            // after `resume`. A busy team is left alone; the remaining tasks wait for it.
+            let idle = server.jobs.lock().expect("jobs lock").current.is_none();
+            if !unblocked || !idle {
+                return Ok(json!({ "message": message }));
+            }
+            start_job(
+                &server,
+                "run",
+                Some(project_id.clone()),
+                move |sources, stop| {
+                    let (store, orchestrator) = open(sources)?;
+                    let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
+                    let summary =
+                        runtime()?.block_on(stop.guard(manager.run(&project_id, None)))?;
+                    Ok((None, format!("{message}; {}", summary_message(&summary))))
+                },
+            )
         }
         "approve" => {
             let project_id = field(&body, "project_id")?;
             let note = optional(&body, "note");
-            let count = blocking(move || {
-                let (store, orchestrator) = open(&sources)?;
-                Ok(ProjectManager::new(&store, &orchestrator)
-                    .approve(&project_id, note.as_deref())?
-                    .len())
-            })
-            .await?;
-            Ok(json!({ "message": format!("plan approved: {count} task(s) created") }))
+            let start = body["run"].as_bool().unwrap_or(false);
+            if start {
+                // Refuse before approving, so a busy team never leaves an approved, idle plan.
+                anyhow::ensure!(
+                    server.jobs.lock().expect("jobs lock").current.is_none(),
+                    "busy: the team is already working; approve the plan when it finishes"
+                );
+            }
+            let count = {
+                let sources = sources.clone();
+                let project_id = project_id.clone();
+                blocking(move || {
+                    let (store, orchestrator) = open(&sources)?;
+                    Ok(ProjectManager::new(&store, &orchestrator)
+                        .approve(&project_id, note.as_deref())?
+                        .len())
+                })
+                .await?
+            };
+            if !start {
+                return Ok(json!({ "message": format!("plan approved: {count} task(s) created") }));
+            }
+            start_job(
+                &server,
+                "run",
+                Some(project_id.clone()),
+                move |sources, stop| {
+                    let (store, orchestrator) = open(sources)?;
+                    let manager = ProjectManager::new(&store, &orchestrator).with_progress(true);
+                    let summary =
+                        runtime()?.block_on(stop.guard(manager.run(&project_id, None)))?;
+                    Ok((
+                        None,
+                        format!(
+                            "plan approved: {count} task(s); {}",
+                            summary_message(&summary)
+                        ),
+                    ))
+                },
+            )
         }
         "configure" => {
             let change: ConfigureAction =
@@ -723,6 +924,7 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
                         remote_url: change.remote,
                         budget_tokens: change.budget_tokens,
                         budget_usd: change.budget_usd,
+                        add_rules: Vec::new(),
                     },
                 )?;
                 Ok(format!("{} saved", config.project_id))
@@ -773,7 +975,7 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
             let message = blocking(move || {
                 let company = company_dir(&sources);
                 let employee = if approve {
-                    registry::approve_hire(&company, &employee_id, &hr_audit_dir())?
+                    registry::approve_hire(&company, &employee_id, &hr_audit_dir(&company))?
                 } else {
                     registry::check_proposal(&company, &employee_id)?
                 };
@@ -788,6 +990,26 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
             .await?;
             Ok(json!({ "message": message }))
         }
+        "set_model" => {
+            let employee_id = field(&body, "employee_id")?;
+            let model: crate::config::ModelConfig =
+                serde_json::from_value(body["model"].clone())
+                    .map_err(|err| anyhow::anyhow!("invalid model settings: {err}"))?;
+            let message = blocking(move || {
+                registry::set_model(
+                    &company_dir(&sources),
+                    &employee_id,
+                    &model,
+                    &hr_audit_dir(&company_dir(&sources)),
+                )?;
+                Ok(format!(
+                    "{employee_id} now uses {} ({:?}); it applies from the next run",
+                    model.model, model.provider
+                ))
+            })
+            .await?;
+            Ok(json!({ "message": message }))
+        }
         "set_status" => {
             let employee_id = field(&body, "employee_id")?;
             let status: EmployeeStatus = serde_json::from_value(body["status"].clone())
@@ -797,7 +1019,7 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
                     &company_dir(&sources),
                     &employee_id,
                     status,
-                    &hr_audit_dir(),
+                    &hr_audit_dir(&company_dir(&sources)),
                 )?;
                 Ok(format!(
                     "{employee_id} is now {}",
@@ -809,6 +1031,77 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
         }
         other => bail!("unknown action `{other}`"),
     }
+}
+
+/// Claude models Claude Code accepts by id or alias (Anthropic's current list).
+const CLAUDE_MODELS: [(&str, &str); 9] = [
+    ("sonnet", "Sonnet (cel mai nou)"),
+    ("opus", "Opus (cel mai nou)"),
+    ("haiku", "Haiku (cel mai nou)"),
+    ("claude-fable-5-1", "Claude Fable 5.1"),
+    ("claude-opus-5-5", "Claude Opus 5.5"),
+    ("claude-opus-5", "Claude Opus 5"),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+    ("claude-sonnet-5", "Claude Sonnet 5"),
+    ("claude-haiku-4-5", "Claude Haiku 4.5"),
+];
+
+/// The models the team window offers per backend: Claude's list, the models the Codex login
+/// can use (its local cache, `~/.codex/models_cache.json`), and those installed on the
+/// Ollama server the team uses. A source that cannot be read gives an empty list.
+async fn available_models(sources: &Sources) -> Value {
+    let claude: Vec<Value> = CLAUDE_MODELS
+        .iter()
+        .map(|(id, label)| json!({ "id": id, "label": label }))
+        .collect();
+
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    let codex: Vec<Value> =
+        std::fs::read_to_string(Path::new(&home).join(".codex/models_cache.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|cache| cache["models"].as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|model| model["visibility"] == "list")
+            .filter_map(|model| {
+                let id = model["slug"].as_str()?.to_string();
+                let label = model["display_name"].as_str().unwrap_or(&id).to_string();
+                Some(json!({ "id": id, "label": label }))
+            })
+            .collect();
+
+    let base_url = Registry::load(&sources.employees_dir)
+        .ok()
+        .and_then(|registry| {
+            registry
+                .employees()
+                .filter_map(|employee| employee.contract.model.clone())
+                .find(|model| model.provider == crate::config::ProviderKind::Ollama)
+                .and_then(|model| model.base_url)
+        });
+    let mut ollama = Vec::new();
+    if let Some(base_url) = base_url {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build();
+        if let Ok(client) = client
+            && let Ok(response) = client
+                .get(format!("{}/api/tags", base_url.trim_end_matches('/')))
+                .send()
+                .await
+            && let Ok(tags) = response.json::<Value>().await
+        {
+            for model in tags["models"].as_array().cloned().unwrap_or_default() {
+                if let Some(name) = model["name"].as_str() {
+                    ollama.push(json!({ "id": name, "label": name }));
+                }
+            }
+        }
+    }
+    json!({ "claude_code": claude, "codex": codex, "ollama": ollama })
 }
 
 /// `a=1&b=x%20y` as decoded pairs.
@@ -949,6 +1242,32 @@ fn decode_base64(text: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stop_drops_the_teams_work() {
+        let (sender, receiver) = watch::channel(false);
+        let stop = Stop(receiver);
+        let finished = stop
+            .guard(async { Ok::<_, anyhow::Error>(7) })
+            .await
+            .unwrap();
+        assert_eq!(finished, 7);
+
+        let hanging = tokio::spawn({
+            let stop = stop.clone();
+            async move {
+                stop.guard(std::future::pending::<Result<()>>())
+                    .await
+                    .unwrap_err()
+            }
+        });
+        sender.send(true).unwrap();
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), hanging)
+            .await
+            .expect("the stop ends the work")
+            .unwrap();
+        assert!(format!("{err:#}").ends_with(STOPPED));
+    }
 
     #[test]
     fn decodes_base64() {

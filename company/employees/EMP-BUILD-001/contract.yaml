@@ -7,13 +7,12 @@ employee_type: agent
 function: builder
 status: active
 model:
-  provider: ollama
-  model: qwen3-coder:30b
-  base_url: http://10.10.0.14:11434
+  provider: codex
+  model: gpt-5.6-sol
   temperature: 0.1
-  num_ctx: 49152
-  num_predict: 8192
-  timeout_secs: 180
+  timeout_secs: 1200
+  max_retries: 2
+  retry_backoff_ms: 1000
 skills:
   - implementation
   - testing

@@ -11,9 +11,12 @@ use ai_team::{
     llm::{LlmProvider, ProviderFactory},
     orchestrator::Orchestrator,
     project::{ProjectManager, ProjectSettings, ProjectStatus, Store, TaskStatus},
-    registry::Registry,
+    registry::{self, Registry},
 };
-use common::{ScriptedProvider, TestLlm, edit_contract, project, sample_company, test_providers};
+use common::{
+    ScriptedProvider, TestLlm, contract_yaml, edit_contract, project, sample_company,
+    test_providers, write_employee,
+};
 
 const APPROVE: &str = r#"{"decision":"APPROVED","feedback":"looks good"}"#;
 
@@ -322,11 +325,24 @@ async fn owner_can_change_the_test_command_later() {
             "app",
             ProjectSettings {
                 test_command: Some(String::new()),
+                add_rules: vec![
+                    "Read docs/plan/M1.md".to_string(),
+                    "Read docs/plan/M1.md".to_string(),
+                ],
                 ..ProjectSettings::default()
             },
         )
         .unwrap();
     assert_eq!(env.store.project("app").unwrap().config.test_command, None);
+    let rules = env.store.project("app").unwrap().config.rules;
+    assert_eq!(
+        rules
+            .iter()
+            .filter(|rule| *rule == "Read docs/plan/M1.md")
+            .count(),
+        1,
+        "a rule is added once: {rules:?}"
+    );
     let decisions = env.store.owner_decisions("app").unwrap();
     assert_eq!(
         decisions
@@ -545,6 +561,31 @@ async fn resumed_task_resolves_conflicts_with_newer_main() {
 }
 
 #[tokio::test]
+async fn new_request_without_a_planner_creates_nothing() {
+    let env = env();
+    edit_contract(
+        &env.company,
+        "EMP-PLAN-001",
+        "status: active",
+        "status: suspended",
+    );
+    let orchestrator = env.orchestrator(test_providers());
+    let manager = ProjectManager::new(&env.store, &orchestrator);
+    let request = ai_team::owner::NewRequest {
+        prompt: "Build a tool".to_string(),
+        files: Vec::new(),
+        project_id: None,
+        new_project_name: Some("good".to_string()),
+        test_command: None,
+    };
+
+    let err = ai_team::owner::prepare(&env.store, &manager, &request).unwrap_err();
+    assert!(format!("{err:#}").contains("no active planner"), "{err:#}");
+    // A failed request used to leave an empty project in PLANNING behind.
+    assert!(env.store.projects().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn owner_request_with_a_file_runs_without_a_plan() {
     let env = env();
     env.store.add_project(&config(3, None)).unwrap(); // no plan at all
@@ -694,4 +735,153 @@ async fn questions_can_carry_documents_without_a_project() {
     // Nothing was created or saved.
     assert!(env.store.projects().unwrap().is_empty());
     assert!(manager.ask_with(None, "Explain.", &[]).await.is_err());
+}
+
+/// A stand-in for the Claude Code CLI: as a Builder (acceptEdits) it writes a file in its
+/// working folder, as a Reviewer (dontAsk) it approves only if it can see that file.
+const FAKE_CLAUDE: &str = r#"
+import json, os, sys
+args = sys.argv[1:]
+mode = args[args.index("--permission-mode") + 1]
+prompt = sys.stdin.read()
+if mode == "acceptEdits":
+    os.makedirs("notes", exist_ok=True)
+    open("notes/result.md", "w").write("by claude code\n")
+    result = "Wrote notes/result.md"
+else:
+    seen = os.path.exists("notes/result.md")
+    result = json.dumps({"decision": "APPROVED" if seen else "CHANGES_REQUIRED",
+                         "target": "builder", "feedback": "ran it" if seen else "file missing"})
+print(json.dumps({"type": "result", "is_error": False, "result": result,
+                  "total_cost_usd": 0.0125,
+                  "usage": {"input_tokens": 100, "output_tokens": 20,
+                            "cache_read_input_tokens": 900, "cache_creation_input_tokens": 0}}))
+"#;
+
+#[tokio::test]
+async fn claude_code_builds_in_a_clone_and_reviews_read_only() {
+    let env = env();
+    let fake = env.root.join("fake_claude.py");
+    fs::write(&fake, FAKE_CLAUDE).unwrap();
+    let mut model =
+        ai_team::config::ModelConfig::new(ai_team::config::ProviderKind::ClaudeCode, "sonnet");
+    model.cli = Some(vec!["python".to_string(), fake.display().to_string()]);
+    model.timeout_secs = 60;
+    for id in ["EMP-BUILD-001", "EMP-REV-001"] {
+        registry::set_model(&env.company, id, &model, &env.root.join("hr")).unwrap();
+    }
+    env.planned(config(2, Some(file_exists_command()))).await;
+
+    // Claude Code employees get the real provider; the others stay offline fakes.
+    let providers: ProviderFactory = Arc::new(|role, config| {
+        if config.provider == ai_team::config::ProviderKind::ClaudeCode {
+            ai_team::llm::provider_for_role(role, config)
+        } else {
+            Ok(Arc::new(TestLlm::new(role, config.model.clone())) as Arc<dyn LlmProvider>)
+        }
+    });
+    let orchestrator = env.orchestrator(providers);
+    let summary = ProjectManager::new(&env.store, &orchestrator)
+        .run("app", Some(1))
+        .await
+        .unwrap();
+
+    assert_eq!(summary.executed[0].1, TaskStatus::Done);
+    // The change came back through the platform: tests ran, it was committed and merged.
+    assert_eq!(
+        fs::read_to_string(env.main_file("notes/result.md")).unwrap(),
+        "by claude code\n"
+    );
+    let state = env.store.load_task_state("app-T01").unwrap().unwrap();
+    assert!(state.verification.unwrap().test.unwrap().passed);
+    assert_eq!(state.review.unwrap().feedback, "ran it");
+    // On the CLI's login (a subscription) the reported cost is not billed, so it is not counted.
+    assert_eq!(state.usage.cost_usd, 0.0);
+    // 1,000 prompt tokens per Claude Code run (cache reads included), plus the offline planner.
+    assert!(
+        state.usage.input_tokens >= 2000,
+        "{}",
+        state.usage.input_tokens
+    );
+}
+
+/// A stand-in for `codex exec`: JSONL events on stdout, the last message in `-o <file>`.
+const FAKE_CODEX: &str = r#"
+import json, os, sys
+args = sys.argv[1:]
+sandbox = args[args.index("--sandbox") + 1]
+folder = args[args.index("--cd") + 1]
+last = args[args.index("--output-last-message") + 1]
+sys.stdin.read()
+target = os.path.join(folder, "notes", "result.md")
+if sandbox == "workspace-write":
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    open(target, "w").write("by codex\n")
+    message = "Wrote notes/result.md"
+else:
+    seen = os.path.exists(target)
+    message = json.dumps({"decision": "APPROVED" if seen else "CHANGES_REQUIRED",
+                          "target": "builder", "feedback": "codex ran it" if seen else "missing"})
+open(last, "w").write(message)
+print(json.dumps({"type": "thread.started", "thread_id": "t"}))
+print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 500, "cached_input_tokens": 400,
+                                                       "output_tokens": 30, "reasoning_output_tokens": 10}}))
+"#;
+
+#[tokio::test]
+async fn codex_builds_in_a_clone_and_reviews_read_only() {
+    let env = env();
+    let fake = env.root.join("fake_codex.py");
+    fs::write(&fake, FAKE_CODEX).unwrap();
+    let mut model =
+        ai_team::config::ModelConfig::new(ai_team::config::ProviderKind::Codex, "default");
+    model.cli = Some(vec!["python".to_string(), fake.display().to_string()]);
+    model.timeout_secs = 60;
+    for id in ["EMP-BUILD-001", "EMP-REV-001"] {
+        registry::set_model(&env.company, id, &model, &env.root.join("hr")).unwrap();
+    }
+    // The Builder may delegate and has an active specialist, yet a CLI Builder writes the
+    // code itself: it is the strongest model on the team.
+    write_employee(
+        &env.company.join("employees"),
+        "EMP-PY-001",
+        &contract_yaml(
+            "EMP-PY-001",
+            "subagent",
+            "specialist",
+            "EMP-BUILD-001",
+            &["write_implementation"],
+            Some("test-py"),
+        ),
+    );
+    env.planned(config(2, Some(file_exists_command()))).await;
+    let providers: ProviderFactory = Arc::new(|role, config| {
+        if config.provider == ai_team::config::ProviderKind::Codex {
+            ai_team::llm::provider_for_role(role, config)
+        } else {
+            Ok(Arc::new(TestLlm::new(role, config.model.clone())) as Arc<dyn LlmProvider>)
+        }
+    });
+    let orchestrator = env.orchestrator(providers);
+    let summary = ProjectManager::new(&env.store, &orchestrator)
+        .run("app", Some(1))
+        .await
+        .unwrap();
+
+    assert_eq!(summary.executed[0].1, TaskStatus::Done);
+    assert_eq!(
+        fs::read_to_string(env.main_file("notes/result.md")).unwrap(),
+        "by codex\n"
+    );
+    assert!(
+        !env.main_file("work").exists(),
+        "the specialist was not delegated to"
+    );
+    let state = env.store.load_task_state("app-T01").unwrap().unwrap();
+    assert_eq!(state.review.unwrap().feedback, "codex ran it");
+    assert!(
+        state.usage.output_tokens >= 80,
+        "{}",
+        state.usage.output_tokens
+    );
 }

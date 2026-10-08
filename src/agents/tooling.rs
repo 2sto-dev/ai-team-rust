@@ -35,6 +35,18 @@ fn record_call(
 pub const MAX_TOOL_ROUNDS: usize = 8;
 const ARGUMENT_AUDIT_CHARS: usize = 500;
 
+/// Planning is separate from implementation, including for CLI-backed department leads.
+pub async fn plan_answer(
+    llm: &dyn LlmProvider,
+    system_prompt: &str,
+    prompt: &str,
+    ctx: &AgentContext,
+) -> Result<String> {
+    let completion = llm.generate_plan(system_prompt, prompt).await?;
+    record_call(ctx, llm, completion.usage, 0, 0)?;
+    Ok(completion.text)
+}
+
 /// Answers `prompt`, letting the model use `toolbox` when it has one.
 pub async fn answer(
     llm: &dyn LlmProvider,

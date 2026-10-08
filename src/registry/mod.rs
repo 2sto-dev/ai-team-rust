@@ -18,7 +18,7 @@ use crate::{
     mcp::{McpCatalog, Toolbox},
 };
 
-pub use hire::{HireRequest, approve_hire, check_proposal, propose_hire, set_status};
+pub use hire::{HireRequest, approve_hire, check_proposal, propose_hire, set_model, set_status};
 
 /// The human at the top of the org chart; the orchestrator reports to it.
 pub const OWNER: &str = "OWNER";

@@ -246,8 +246,12 @@ impl Orchestrator {
 
         let outcome = match root.record(first_event, &state) {
             Ok(()) => {
-                self.drive(&root, project, &mut state, checkpoint, workbench)
-                    .await
+                let drive = self.drive(&root, project, &mut state, checkpoint, workbench);
+                // Agents that work on files themselves (Claude Code) find the workspace here.
+                match workbench.and_then(|workbench| workbench.root()) {
+                    Some(path) => crate::claude_code::WORKSPACE_ROOT.scope(path, drive).await,
+                    None => drive.await,
+                }
             }
             Err(err) => Err(err),
         };
@@ -640,6 +644,54 @@ impl Orchestrator {
     }
 }
 
+/// Words that name a kind of job, not the expertise: "Specialist în evaluarea vorbirii" gave
+/// `EMP-SPECIALI-001`.
+const GENERIC_TITLE_WORDS: [&str; 16] = [
+    "specialist",
+    "expert",
+    "senior",
+    "junior",
+    "lead",
+    "engineer",
+    "developer",
+    "consultant",
+    "inginer",
+    "dezvoltator",
+    "programator",
+    "in",
+    "de",
+    "pentru",
+    "si",
+    "and",
+];
+
+/// The `<CODE>` of `EMP-<CODE>-001`: the Planner's code when usable, otherwise the first title
+/// word that names the expertise. ASCII letters and digits only, at most 8.
+fn hire_slug(hire: &HireSuggestion) -> String {
+    let clean = |word: &str| -> String {
+        word.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(8)
+            .collect::<String>()
+            .to_ascii_uppercase()
+    };
+    if let Some(code) = hire.code.as_deref().map(clean)
+        && code.len() >= 2
+    {
+        return code;
+    }
+    let words: Vec<&str> = hire.title.split_whitespace().collect();
+    words
+        .iter()
+        .find(|word| {
+            let lower = word.to_lowercase();
+            !GENERIC_TITLE_WORDS.contains(&lower.as_str()) && clean(word).len() >= 2
+        })
+        .or(words.first())
+        .map(|word| clean(word))
+        .unwrap_or_default()
+}
+
 /// Turns the Planner's hiring suggestion into a proposal in `company/proposals/<ID>/` for
 /// the Owner (`hire check` / `hire approve`). It never blocks or fails the run: an unusable
 /// suggestion is audited and dropped, and a pending proposal for the same role is not
@@ -667,16 +719,7 @@ fn suggest_hire(
             ));
         }
     };
-    let slug: String = hire
-        .title
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .take(8)
-        .collect::<String>()
-        .to_ascii_uppercase();
+    let slug = hire_slug(hire);
     if slug.is_empty() {
         return ignore("the title has no usable name".to_string());
     }
@@ -781,5 +824,34 @@ fn expect_review(output: AgentOutput) -> Result<ReviewResult> {
             "protocol violation: Reviewer returned {} instead of a review",
             other.describe()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn suggestion(title: &str, code: Option<&str>) -> HireSuggestion {
+        HireSuggestion {
+            title: title.to_string(),
+            manager: "EMP-ARCH-001".to_string(),
+            skills: Vec::new(),
+            reason: String::new(),
+            code: code.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn hire_ids_name_the_expertise() {
+        let speech = "Specialist în evaluarea vorbirii și audio telefonic";
+        assert_eq!(hire_slug(&suggestion(speech, Some("speech"))), "SPEECH");
+        // Without a code, generic job words are skipped (this gave EMP-SPECIALI-001).
+        assert_eq!(hire_slug(&suggestion(speech, None)), "EVALUARE");
+        assert_eq!(hire_slug(&suggestion("Elixir Developer", None)), "ELIXIR");
+        assert_eq!(
+            hire_slug(&suggestion("Senior Rust Engineer", Some("-"))),
+            "RUST"
+        );
+        assert_eq!(hire_slug(&suggestion("Specialist", None)), "SPECIALI");
     }
 }

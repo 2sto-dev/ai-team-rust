@@ -197,6 +197,9 @@ enum ProjectAction {
         /// Most dollars the project may cost (needs prices in contracts); 0 removes it.
         #[arg(long)]
         budget_usd: Option<f64>,
+        /// A rule every agent sees on this project; repeat for several.
+        #[arg(long = "add-rule")]
+        add_rules: Vec<String>,
     },
 }
 
@@ -292,7 +295,7 @@ async fn main() -> Result<()> {
                 ai_team::dashboard::Sources {
                     data_dir: cli.data.clone(),
                     employees_dir: employees_dir.clone(),
-                    audit_dir: ai_team::audit::default_audit_dir(),
+                    audit_dir: ai_team::audit::run_audit_dir(&cli.data),
                 },
                 port,
                 writable,
@@ -354,7 +357,12 @@ async fn main() -> Result<()> {
                     status,
                 },
         } => {
-            registry::set_status(&cli.company, &employee_id, status, &hr_audit_dir())?;
+            registry::set_status(
+                &cli.company,
+                &employee_id,
+                status,
+                &hr_audit_dir(&cli.company),
+            )?;
             println!("{employee_id}: status set to {status}");
             Ok(())
         }
@@ -411,6 +419,7 @@ async fn doctor(employees_dir: &Path, offline: bool) -> Result<()> {
     if !offline {
         problems += check_ollama_servers(&registry).await;
         problems += check_mcp_servers(&registry).await;
+        problems += check_claude_code(&registry).await;
     }
 
     if problems > 0 {
@@ -421,6 +430,61 @@ async fn doctor(employees_dir: &Path, offline: bool) -> Result<()> {
 }
 
 /// Starts every MCP server an active employee uses and lists its tools.
+/// Employees on `claude_code`: the CLI must start (`<cli> --version`).
+async fn check_claude_code(registry: &Registry) -> usize {
+    let mut problems = 0;
+    let mut checked = std::collections::BTreeSet::new();
+    for employee in registry.employees().filter(|employee| employee.is_active()) {
+        let Some(model) = &employee.contract.model else {
+            continue;
+        };
+        if !matches!(
+            model.provider,
+            ProviderKind::ClaudeCode | ProviderKind::Codex
+        ) {
+            continue;
+        }
+        let cli = model
+            .cli
+            .clone()
+            .filter(|cli| !cli.is_empty())
+            .unwrap_or_else(|| vec![ai_team::claude_code::default_cli(model.provider).to_string()]);
+        if !checked.insert(cli.clone()) {
+            println!(
+                "  {}: {:?} ({})",
+                employee.id(),
+                model.provider,
+                model.model
+            );
+            continue;
+        }
+        let output = tokio::process::Command::new(&cli[0])
+            .args(&cli[1..])
+            .arg("--version")
+            .output()
+            .await;
+        match output {
+            Ok(output) if output.status.success() => println!(
+                "  {}: {:?} ({}) OK - {}",
+                employee.id(),
+                model.provider,
+                model.model,
+                String::from_utf8_lossy(&output.stdout).trim()
+            ),
+            _ => {
+                problems += 1;
+                println!(
+                    "ERROR: {} uses {:?} but `{} --version` does not run",
+                    employee.id(),
+                    model.provider,
+                    cli.join(" ")
+                );
+            }
+        }
+    }
+    problems
+}
+
 async fn check_mcp_servers(registry: &Registry) -> usize {
     let mut used: Vec<String> = registry
         .employees()
@@ -645,7 +709,7 @@ fn hire(company: &Path, action: HireAction) -> Result<()> {
             );
         }
         HireAction::Approve { employee_id } => {
-            let employee = registry::approve_hire(company, &employee_id, &hr_audit_dir())?;
+            let employee = registry::approve_hire(company, &employee_id, &hr_audit_dir(company))?;
             println!(
                 "{employee_id} hired: {} [{}], reports to {}",
                 employee.contract.name, employee.contract.function, employee.contract.manager_id
@@ -840,6 +904,7 @@ async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) 
             remote,
             budget_tokens,
             budget_usd,
+            add_rules,
         } => {
             let config = manager.configure(
                 &project_id,
@@ -849,6 +914,7 @@ async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) 
                     remote_url: remote,
                     budget_tokens,
                     budget_usd,
+                    add_rules,
                 },
             )?;
             println!(
@@ -1195,7 +1261,8 @@ fn read_line(prompt: &str) -> Result<Option<String>> {
 }
 
 /// Suggested in the console for a new project; the shipped team writes Python.
-const DEFAULT_TEST_COMMAND: &str = "python -m unittest discover -s tests -v";
+/// Lint plus tests: a style or lint failure blocks the work like a failing test.
+const DEFAULT_TEST_COMMAND: &str = "ruff check . && python -m unittest discover -s tests -v";
 const NO_TESTS_WARNING: &str = "ATENTIE: fara comanda de test platforma nu ruleaza nimic; Reviewer-ul \
 aproba doar citind codul, iar o regresie poate trece. Seteaz-o oricand cu: \
 ai-team project configure <id> --test-command \"...\"";

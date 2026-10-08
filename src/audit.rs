@@ -14,9 +14,23 @@ pub fn default_audit_dir() -> PathBuf {
     Path::new(".ai-team").join("runs")
 }
 
-/// Company-level decisions (hiring, status changes) are appended to `hr.jsonl` here.
-pub fn hr_audit_dir() -> PathBuf {
-    PathBuf::from(".ai-team")
+/// Per-run audit files next to the data folder: `data` gives `.ai-team/runs`, as before, and
+/// a copy tried with `--data <copy>/data` keeps its runs out of the real activity feed.
+pub fn run_audit_dir(data: &Path) -> PathBuf {
+    data.parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(".ai-team")
+        .join("runs")
+}
+
+/// Company-level decisions (hiring, status and model changes) are appended to `hr.jsonl` in
+/// `.ai-team/` next to the company folder: `company` gives `.ai-team`, as before, and a copy
+/// tried with `--company <copy>/company` keeps its decisions out of the real log.
+pub fn hr_audit_dir(company: &Path) -> PathBuf {
+    company
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(".ai-team")
 }
 
 #[derive(Debug, Serialize)]
@@ -94,5 +108,24 @@ impl AuditTrail {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hr_log_sits_next_to_the_company() {
+        assert_eq!(hr_audit_dir(Path::new("company")), Path::new(".ai-team"));
+        assert_eq!(run_audit_dir(Path::new("data")), default_audit_dir());
+        assert_eq!(
+            run_audit_dir(Path::new("tmp/copy/data")),
+            Path::new("tmp/copy/.ai-team/runs")
+        );
+        assert_eq!(
+            hr_audit_dir(Path::new("tmp/copy/company")),
+            Path::new("tmp/copy/.ai-team")
+        );
     }
 }

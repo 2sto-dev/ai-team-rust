@@ -70,7 +70,7 @@ fn shell(command: &str) -> Command {
 }
 
 /// Kills the process and every child it started (a test runner spawns more processes).
-async fn kill_tree(pid: u32) {
+pub(crate) async fn kill_tree(pid: u32) {
     let result = if cfg!(windows) {
         Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
@@ -88,6 +88,41 @@ async fn kill_tree(pid: u32) {
     };
     if let Err(err) = result {
         tracing::warn!(pid, error = %err, "cannot kill test process tree");
+    }
+}
+
+/// Kills a child's whole process tree when dropped before `disarm`: when the Owner stops a
+/// run, the futures holding the children are dropped, and `kill_on_drop` alone ends only the
+/// direct child (a shell or a CLI shim), leaving the real agent or test process running.
+pub(crate) struct KillTreeOnDrop(Option<u32>);
+
+impl KillTreeOnDrop {
+    pub(crate) fn new(pid: Option<u32>) -> Self {
+        Self(pid)
+    }
+
+    /// The child finished normally: its pid may be reused, so nothing is killed.
+    pub(crate) fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for KillTreeOnDrop {
+    fn drop(&mut self) {
+        let Some(pid) = self.0 else { return };
+        let mut command = if cfg!(windows) {
+            let mut command = std::process::Command::new("taskkill");
+            command.args(["/T", "/F", "/PID", &pid.to_string()]);
+            command
+        } else {
+            let mut command = std::process::Command::new("kill");
+            command.args(["-9", &format!("-{pid}")]);
+            command
+        };
+        let _ = command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 
@@ -131,6 +166,7 @@ pub async fn run_tests(dir: &Path, command: &str, timeout: Duration) -> Result<T
         .spawn()
         .with_context(|| format!("cannot start test command `{command}`"))?;
     let pid = child.id();
+    let mut tree = KillTreeOnDrop::new(pid);
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
@@ -148,6 +184,7 @@ pub async fn run_tests(dir: &Path, command: &str, timeout: Duration) -> Result<T
 
     match finished {
         Ok(status) => {
+            tree.disarm();
             let status = status.context("test command did not finish")?;
             Ok(TestRun {
                 command: command.to_string(),
@@ -163,6 +200,7 @@ pub async fn run_tests(dir: &Path, command: &str, timeout: Duration) -> Result<T
                 kill_tree(pid).await;
             }
             let _ = child.kill().await;
+            tree.disarm();
             let partial = combined_output(&out, &err);
             Ok(TestRun {
                 command: command.to_string(),
@@ -237,6 +275,35 @@ mod tests {
             .unwrap();
         assert!(run.timed_out && !run.passed);
         assert!(run.duration_secs < 15, "took {} s", run.duration_secs);
+    }
+
+    /// A stopped run drops the test future: the shell's children must die with it, or a
+    /// stopped team would keep running programs in the workspace.
+    #[tokio::test]
+    async fn dropping_a_run_kills_the_whole_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ticker.py"),
+            "import time
+for _ in range(200):
+    open('ticks.txt', 'a').write('.')
+    time.sleep(0.1)
+",
+        )
+        .unwrap();
+        let work = run_tests(dir.path(), "python ticker.py", Duration::from_secs(60));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1500), work)
+                .await
+                .is_err(),
+            "the ticker runs for 20 s"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let ticks = || std::fs::read_to_string(dir.path().join("ticks.txt")).unwrap_or_default();
+        let after_stop = ticks();
+        assert!(!after_stop.is_empty(), "the ticker started");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        assert_eq!(ticks(), after_stop, "the grandchild kept running");
     }
 
     #[test]

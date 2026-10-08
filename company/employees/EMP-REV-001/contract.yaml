@@ -7,13 +7,12 @@ employee_type: agent
 function: reviewer
 status: active
 model:
-  provider: ollama
-  model: qwen2.5:14b
-  base_url: http://10.10.0.14:11434
+  provider: codex
+  model: gpt-6-astra
   temperature: 0.1
-  num_ctx: 32768
-  num_predict: 1200
-  timeout_secs: 180
+  timeout_secs: 900
+  max_retries: 2
+  retry_backoff_ms: 1000
 skills:
   - code review
   - security review

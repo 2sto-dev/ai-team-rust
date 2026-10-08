@@ -1,6 +1,5 @@
 //! The Owner's entry points shared by the CLI, the console and the web interface: a
-//! request in their own words, with files, becomes a project (or a task in one) that the team
-//! runs.
+//! request becomes a milestone plan. Execution waits for the Owner's approval.
 
 use std::path::PathBuf;
 
@@ -8,7 +7,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     domain::ProjectConfig,
-    project::{ProjectManager, ProjectSettings, Store, TaskRecord},
+    project::{ProjectManager, ProjectSettings, Store, TaskRecord, plan::TaskPlan},
 };
 
 const PREVIEW_LINES: usize = 150;
@@ -120,9 +119,18 @@ pub fn prepare(
     let preview = inputs_preview(&request.files)?;
     let prompt = &request.prompt;
 
+    // Refuse before creating anything: a failed request used to leave an empty project behind.
+    anyhow::ensure!(
+        request.project_id.is_some() || !manager.planner_missing(),
+        "no active planner: activate the Planner (team window, or `employees set-status <ID> active`)          before starting a new project"
+    );
     let (project_id, created) = match &request.project_id {
         Some(id) => {
             store.project(id)?;
+            anyhow::ensure!(
+                store.pending_plan(id)?.is_none(),
+                "project {id} already has a pending plan; approve or revise it first"
+            );
             if request.test_command.is_some() {
                 manager.configure(
                     id,
@@ -190,6 +198,23 @@ pub fn prepare(
         inputs,
         preview,
     })
+}
+
+/// All public request entry points propose milestones before starting implementation.
+pub async fn plan_request(
+    manager: &ProjectManager<'_>,
+    request: &NewRequest,
+    prepared: &Prepared,
+) -> Result<TaskPlan> {
+    let mut scope = request.prompt.trim().to_string();
+    if !prepared.inputs.is_empty() {
+        scope.push_str(&format!(
+            "\n\nOWNER INPUT FILES: {}\n{}",
+            prepared.inputs.join(", "),
+            prepared.preview
+        ));
+    }
+    manager.plan(&prepared.project_id, Some(&scope)).await
 }
 
 /// Adds the request as a task ("Owner requests" milestone, no plan approval needed). An

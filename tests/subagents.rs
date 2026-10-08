@@ -490,7 +490,7 @@ async fn lead_delegates_and_the_platform_combines_owned_files() {
 }
 
 #[tokio::test]
-async fn invalid_split_falls_back_to_the_lead_working_alone() {
+async fn invalid_split_fails_instead_of_bypassing_delegation() {
     let env = env();
     add_subagent(
         &env.company,
@@ -500,10 +500,17 @@ async fn invalid_split_falls_back_to_the_lead_working_alone() {
         "test-py",
     );
     let bad = r#"{"subtasks":[{"assignee":"EMP-GHOST-001","title":"x","instructions":"y","files":["a.txt"]}]}"#;
+    let empty = r#"{"subtasks":[]}"#;
+    // A third answer would be the lead working alone; it must never be asked for.
     let lead = ScriptedProvider::new([
         bad.to_string(),
-        bad.to_string(),
-        "### FILE: solo.txt\n```\nby the lead\n```\n".to_string(),
+        empty.to_string(),
+        "### FILE: solo.txt
+```
+by the lead
+```
+"
+        .to_string(),
     ]);
     env.planned(3).await;
 
@@ -512,19 +519,34 @@ async fn invalid_split_falls_back_to_the_lead_working_alone() {
         ("test-builder", lead.clone()),
         ("test-reviewer", reviewer),
     ]));
-    ProjectManager::new(&env.store, &orchestrator)
+    let summary = ProjectManager::new(&env.store, &orchestrator)
         .run("app", Some(1))
         .await
         .unwrap();
 
-    assert_eq!(
-        fs::read_to_string(env.file("solo.txt")).unwrap(),
-        "by the lead\n"
+    assert_eq!(summary.executed[0].1, TaskStatus::Failed);
+    assert!(
+        !env.file("solo.txt").exists(),
+        "the lead did not work alone"
     );
-    assert!(lead.prompts()[1].contains("REJECTED BY THE CONTROL PLANE"));
-    assert!(lead.prompts()[1].contains("not in your team"));
-    let events = env.audit();
-    assert!(events.iter().any(|e| e["event"] == "DELEGATION_SKIPPED"));
+    let prompts = lead.prompts();
+    assert_eq!(prompts.len(), 2, "two split attempts, no solo call");
+    assert!(prompts[1].contains("REJECTED BY THE CONTROL PLANE"));
+    assert!(prompts[1].contains("not in your team"));
+    let error = env.store.load_task_state("app-T01").unwrap().unwrap().error;
+    assert!(
+        error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no valid delegation"),
+        "{error:?}"
+    );
+    assert!(
+        !env.audit()
+            .iter()
+            .any(|e| e["event"] == "DELEGATION_SKIPPED"),
+        "delegation is never skipped silently"
+    );
 }
 
 #[tokio::test]

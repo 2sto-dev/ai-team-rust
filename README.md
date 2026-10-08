@@ -120,7 +120,7 @@ cargo run -- console --project <id>      # continuă un proiect existent
 Fișiere pentru echipa (cale sau trage fișierul aici; Enter gol = gata):
   fisier> "C:\Users\...\nume.txt"         <- poți trage fișierul în fereastră
   fisier>
-Comanda de test [python -m unittest discover -s tests -v] (Enter = aceasta, '-' = fara teste):
+Comanda de test [ruff check . && python -m unittest discover -s tests -v] (Enter = aceasta, '-' = fara teste):
 Pornesc echipa? [D/n]
   [proiect-T01] architect: specification ready     <- progresul, în timp real
   [proiect-T01] builder: iteration 1 ready
@@ -409,8 +409,14 @@ Builder răspunde cu fișiere  ──>  platforma le scrie pe branch-ul task/<id
 
 ```powershell
 cargo run -- project configure demo-text-tools --test-command "cargo test" --test-timeout 300
+cargo run -- project configure demo-text-tools --test-command "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"
 cargo run -- project configure demo-text-tools --test-command ""      # fără teste
 ```
+
+În interfața web, „Tip proiect” propune comenzi stricte: Python cu `ruff` și teste, Rust cu
+`cargo fmt --check`, `clippy -D warnings` și teste, Go cu `go vet` și teste, Node cu `npm test`.
+Linterul și formatarea blochează lucrul la fel ca un test picat, iar Builder-ul vede comanda exactă.
+Un proiect Python fără niciun test pică și el: `unittest` iese cu codul 5 când n-a rulat nimic.
 
 Agenții nu pot alege, schimba sau inventa comenzi. Fără `test_command`, fișierele sunt revizuite
 așa cum au fost scrise.
@@ -544,7 +550,12 @@ cargo run -- web --port 9000
 - **decizii pe taskuri oprite:** reia (cu notă și iterații), acceptă, anulează;
 - **proiect:** rulează taskurile rămase, setări (comandă de test, timeout, remote, bugete), plan
   propus / aprobat, proiect nou dintr-un JSON ca `projects/*.json`;
-- **echipă:** verifică / aprobă propunerile de angajare, schimbă statutul unui angajat;
+- **echipă:** cardul „Echipa” deschide o fereastră cu organigrama (Owner → Director → departamente
+  → specialiști, cu modelul și rezultatele fiecăruia); click pe un angajat arată competențele,
+  skill pack-urile, uneltele și permisiunile și permite schimbarea **statutului** și a **modelului**
+  (Ollama / Claude / OpenAI: model, context, `max_tokens`, `effort`, prețuri). Contractul e validat
+  la salvare, o setare greșită e refuzată fără să schimbe nimic, iar schimbarea apare în auditul HR
+  (`MODEL_CHANGED`). Tot acolo: verifici / aprobi propunerile de angajare;
 - **ștergere definitivă a unui proiect:** la proiect → „Zonă periculoasă” → „Șterge definitiv
   proiectul” (ceri confirmarea scriind numele proiectului). Dispar: proiectul din aplicație,
   taskurile, istoricul, consumul și statisticile lui (KPI-urile se recalculează fără el), folderul
@@ -583,6 +594,34 @@ ce se întâmplă, inclusiv dintr-o consolă deschisă în paralel):
 - **Activitatea recentă** din audit (doar evenimentele, fără prompturi sau cod).
 
 Ascultă doar pe `127.0.0.1` (datele includ prompturi, cod și costuri).
+
+## Claude Code și Codex ca angajați
+
+Un angajat poate avea `provider: claude_code` sau `provider: codex`: platforma pornește **Claude Code**
+(CLI-ul `claude`) sau **Codex** (`codex exec`) într-o copie git a proiectului, pe **abonamentul** cu
+care e logat CLI-ul (Claude, respectiv ChatGPT). Ca **Builder**, el editează, rulează testele și se corectează
+singur; schimbările lui trec apoi prin aceleași porți ca orice livrare (căi permise, **comanda ta de
+test rulată de platformă**, Reviewer, veto, merge). Ca **Reviewer**, doar citește și rulează
+programul/testele, fără să editeze. Se setează din fereastra echipei sau în contract:
+
+```yaml
+model:
+  provider: claude_code    # sau codex
+  model: sonnet            # claude_code: sonnet / opus / haiku; codex: default = modelul contului
+  timeout_secs: 1200
+```
+
+În fereastra echipei, câmpul **Model** e o listă cu versiunile reale, la orice agent sau subagent:
+Claude (Fable 5.1, Opus 5.5/5, Sonnet 5.5/5, Haiku 4.5 sau aliasurile „cel mai nou”), modelele OpenAI
+pe care le poate folosi contul tău Codex (citite din `~/.codex/models_cache.json`, ex. GPT-6-Astra,
+GPT-5.6-Terra) și modelele instalate pe serverul Ollama; „Alt model…” permite orice altă versiune.
+Alegerea se salvează în contractul angajatului.
+
+Se aleg doar trei furnizori: **Claude Code (abonament)**, **Codex (abonament)**
+și **Ollama (local)**. Login: `claude` → `/login` cu contul de abonament (verificare:
+`claude auth status` → `subscriptionType`), respectiv `codex login`. Cu `api_key_env` setat în
+contract, Claude Code folosește în schimb cheia API din `.env` (cu `ANTHROPIC_WORKSPACE_ID` dacă cheia
+nu e legată de un workspace).
 
 ## Consum și costuri
 

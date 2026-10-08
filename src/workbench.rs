@@ -66,6 +66,11 @@ pub trait Workbench: Send + Sync {
     /// the existing work instead of starting over.
     fn snapshot(&self) -> Result<String>;
 
+    /// The folder the task works in, for agents that read and edit files themselves.
+    fn root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// What the Builder must hold for the platform to act on its behalf.
     fn required_capabilities(&self) -> Vec<Capability>;
 
@@ -148,6 +153,10 @@ impl Workbench for TaskWorkbench {
 
     fn snapshot(&self) -> Result<String> {
         self.workspace.snapshot(SNAPSHOT_BUDGET_CHARS)
+    }
+
+    fn root(&self) -> Option<std::path::PathBuf> {
+        Some(self.workspace.root().to_path_buf())
     }
 
     fn required_capabilities(&self) -> Vec<Capability> {

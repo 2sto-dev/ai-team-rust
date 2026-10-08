@@ -407,3 +407,50 @@ fn status_change_keeps_contract_layout_and_is_audited() {
         .is_err()
     );
 }
+
+#[test]
+fn models_can_be_changed_and_bad_ones_are_reverted() {
+    let dir = tempfile::tempdir().unwrap();
+    let company = sample_company(dir.path());
+    let audit = dir.path().join("hr");
+    let contract = company.join("employees/EMP-REV-001/contract.yaml");
+    let before = fs::read_to_string(&contract).unwrap();
+
+    let mut claude =
+        ai_team::config::ModelConfig::new(ai_team::config::ProviderKind::Claude, "claude-opus-5-5");
+    claude.effort = Some("medium".to_string());
+    claude.cost_per_mtok_input = Some(4.0);
+    registry::set_model(&company, "EMP-REV-001", &claude, &audit).unwrap();
+
+    let reviewer = Registry::load(company.join("employees")).unwrap();
+    let model = reviewer
+        .get("EMP-REV-001")
+        .unwrap()
+        .contract
+        .model
+        .clone()
+        .unwrap();
+    assert_eq!(model.provider, ai_team::config::ProviderKind::Claude);
+    assert_eq!(model.model, "claude-opus-5-5");
+    assert_eq!(model.effort.as_deref(), Some("medium"));
+    // Everything outside the model block is kept.
+    let after = fs::read_to_string(&contract).unwrap();
+    for line in before
+        .lines()
+        .filter(|line| !line.starts_with(' ') && *line != "model:")
+    {
+        assert!(after.contains(line), "lost line {line:?}");
+    }
+    assert!(
+        audit_events(&audit.join("hr.jsonl"))
+            .iter()
+            .any(|e| e["event"] == "MODEL_CHANGED")
+    );
+
+    // An option the provider ignores is refused and nothing changes.
+    let mut wrong = claude.clone();
+    wrong.num_ctx = Some(65536);
+    assert!(registry::set_model(&company, "EMP-REV-001", &wrong, &audit).is_err());
+    assert_eq!(fs::read_to_string(&contract).unwrap(), after);
+    assert!(registry::set_model(&company, "EMP-ORCH-001", &claude, &audit).is_err());
+}

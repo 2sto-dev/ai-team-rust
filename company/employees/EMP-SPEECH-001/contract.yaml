@@ -1,0 +1,29 @@
+# Operational contract for EMP-SPEECH-001 (created with `ai-team hire propose`)
+employee_id: EMP-SPEECH-001
+name: "Speech & Telephony Audio Specialist"
+title: "Speech & Telephony Audio Specialist"
+department: "architecture"
+manager_id: EMP-ARCH-001
+employee_type: subagent
+function: specialist
+status: active
+model:
+  provider: codex
+  model: gpt-6-luna
+  temperature: 0.1
+  timeout_secs: 1200
+  max_retries: 2
+  retry_backoff_ms: 1000
+skills:
+  - Romanian STT/TTS evaluation
+  - test corpus design and transcript annotation
+  - telephony codecs and audio degradation
+  - perceptual TTS evaluation
+  - latency, turn detection and barge-in measurement
+# Skill packs from company/skills/<id>/ and MCP servers from company/mcp.yaml:
+skill_packs:
+  - speech-telephony
+mcp_servers: []
+permissions:
+  - write_specification
+forbidden_actions: []

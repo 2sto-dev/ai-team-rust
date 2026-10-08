@@ -18,6 +18,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 pub(crate) use runner::allowed_env;
+pub(crate) use runner::{KillTreeOnDrop, kill_tree as kill_process_tree};
 pub use runner::{TestRun, run_tests};
 
 /// Most files one Builder answer may write or delete.

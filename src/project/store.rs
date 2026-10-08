@@ -510,6 +510,14 @@ impl Store {
             .transpose()
     }
 
+    /// The request being planned; retained when the Owner asks for a revised proposal.
+    pub fn pending_plan_note(&self, project_id: &str) -> Result<Option<String>> {
+        Ok(self.conn().query_row(
+            "SELECT note FROM plans WHERE project_id = ?1 AND status = 'PROPOSED' ORDER BY id DESC LIMIT 1",
+            params![project_id], |row| row.get::<_, Option<String>>(0),
+        ).optional()?.flatten())
+    }
+
     /// Adds one task written by the Owner (no dependencies) under `milestone`, created if
     /// needed. A project without a plan becomes runnable. Returns the new task id.
     pub fn add_owner_task(
@@ -601,11 +609,33 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
 
+        let pending: Option<String> = tx.query_row(
+            "SELECT proposal_json FROM plans WHERE project_id = ?1 AND status = 'PROPOSED' ORDER BY id DESC LIMIT 1",
+            params![project_id], |row| row.get(0),
+        ).optional()?;
+        anyhow::ensure!(
+            pending.as_deref() == Some(serde_json::to_string(plan)?.as_str()),
+            "the pending plan changed or was already approved; reload it before approving"
+        );
+        let milestone_offset: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM milestones WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+        let (task_count, task_offset): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(MAX(position) + 1, 0) FROM tasks WHERE project_id = ?1",
+            params![project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         let mut milestone_ids = Vec::new();
         for (position, milestone) in plan.milestones.iter().enumerate() {
             tx.execute(
                 "INSERT INTO milestones (project_id, name, position) VALUES (?1, ?2, ?3)",
-                params![project_id, milestone.name.trim(), position as i64],
+                params![
+                    project_id,
+                    milestone.name.trim(),
+                    milestone_offset + position as i64
+                ],
             )?;
             milestone_ids.push(tx.last_insert_rowid());
         }
@@ -614,12 +644,12 @@ impl Store {
             ordered
                 .iter()
                 .position(|o| o.task.key.trim() == key.trim())
-                .map(|index| format!("{project_id}-T{:02}", index + 1))
+                .map(|index| format!("{project_id}-T{:02}", task_count + index as i64 + 1))
         };
 
         let mut ids = Vec::new();
         for (index, item) in ordered.iter().enumerate() {
-            let id = format!("{project_id}-T{:02}", index + 1);
+            let id = format!("{project_id}-T{:02}", task_count + index as i64 + 1);
             tx.execute(
                 "INSERT INTO tasks (id, project_id, milestone_id, position, title, description,
                                     acceptance_json, status, iteration_budget, created_at, updated_at)
@@ -628,7 +658,7 @@ impl Store {
                     id,
                     project_id,
                     milestone_ids[item.milestone],
-                    index as i64,
+                    task_offset + index as i64,
                     item.task.title.trim(),
                     item.task.description.trim(),
                     serde_json::to_string(&item.task.acceptance_criteria)?,

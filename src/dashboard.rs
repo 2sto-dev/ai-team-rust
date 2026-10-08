@@ -19,7 +19,7 @@ use crate::{
 /// History lines shown per task, newest last.
 const HISTORY_LINES: usize = 12;
 /// Audit events in the activity feed.
-const ACTIVITY_EVENTS: usize = 60;
+const ACTIVITY_EVENTS: usize = 150;
 
 /// Where the dashboard reads from.
 #[derive(Debug, Clone)]
@@ -151,6 +151,10 @@ fn team(registry: &Registry) -> Value {
                 "manager": contract.manager_id,
                 "status": serde_json::to_value(contract.status).unwrap_or(Value::Null),
                 "model": contract.model.as_ref().map(|model| model.model.clone()),
+                // The whole model block, for the team settings window.
+                "model_config": contract.model,
+                "skills": contract.skills,
+                "permissions": contract.permissions,
                 "skill_packs": contract.skill_packs,
                 "mcp_servers": contract.mcp_servers,
                 "veto": employee.has(Capability::VetoReview),

@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod audit;
+pub mod claude_code;
 pub mod config;
 pub mod dashboard;
 pub mod domain;

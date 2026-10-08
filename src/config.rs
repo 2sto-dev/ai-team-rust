@@ -15,6 +15,10 @@ pub enum ProviderKind {
     Ollama,
     /// Anthropic Messages API (`{base_url}/v1/messages`).
     Claude,
+    /// The Claude Code CLI, run headless in a clone of the task workspace (`claude_code.rs`).
+    ClaudeCode,
+    /// The OpenAI Codex CLI (`codex exec`), run the same way.
+    Codex,
 }
 
 pub const CLAUDE_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -57,6 +61,12 @@ pub struct ModelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_per_mtok_output: Option<f64>,
     /// Whole-request timeout for one LLM call.
+    /// `claude_code` only: the command that starts Claude Code (default `["claude"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<Vec<String>>,
+    /// `claude_code` only: the most one run may spend (`--max-budget-usd`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_budget_usd: Option<f64>,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
     /// Extra attempts on timeouts, connection errors, 429 and 5xx.
@@ -98,6 +108,8 @@ impl ModelConfig {
             effort: None,
             cost_per_mtok_input: None,
             cost_per_mtok_output: None,
+            cli: None,
+            max_budget_usd: None,
             timeout_secs: default_timeout_secs(),
             max_retries: default_max_retries(),
             retry_backoff_ms: default_retry_backoff_ms(),
@@ -118,6 +130,25 @@ impl ModelConfig {
             anyhow::ensure!(
                 self.num_ctx.is_none() && self.num_predict.is_none(),
                 "num_ctx and num_predict are only supported by the ollama provider"
+            );
+        }
+        if !matches!(self.provider, P::ClaudeCode | P::Codex) {
+            anyhow::ensure!(
+                self.cli.is_none() && self.max_budget_usd.is_none(),
+                "cli and max_budget_usd are only supported by the claude_code and codex providers"
+            );
+        } else {
+            anyhow::ensure!(
+                self.provider == P::ClaudeCode || self.max_budget_usd.is_none(),
+                "max_budget_usd is only supported by claude_code"
+            );
+            anyhow::ensure!(
+                self.base_url.is_none(),
+                "claude_code and codex run the local CLI; base_url does not apply"
+            );
+            anyhow::ensure!(
+                self.max_budget_usd.is_none_or(|budget| budget > 0.0),
+                "max_budget_usd must be positive"
             );
         }
         if !matches!(self.provider, P::Openai | P::Claude) {

@@ -28,6 +28,28 @@ fn post(port: u16, path: &str, host: &str, headers: &str, body: &str) -> String 
     .replace("{port}", &port.to_string())
 }
 
+/// The page's script is checked with `node --check` when Node is installed: one syntax error
+/// (a real newline inside a string) silently disabled every button on the page.
+fn script_parses(page: &str) {
+    let start = page.find("<script>").expect("the page has a script") + "<script>".len();
+    let end = start + page[start..].find("</script>").expect("the script ends");
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("page.js");
+    std::fs::write(&file, &page[start..end]).unwrap();
+    match std::process::Command::new("node")
+        .arg("--check")
+        .arg(&file)
+        .output()
+    {
+        Ok(output) => assert!(
+            output.status.success(),
+            "the page script does not parse:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(_) => eprintln!("node is not installed; the page script was not checked"),
+    }
+}
+
 async fn start(writable: bool, port: u16) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let company = sample_company(dir.path());
@@ -65,6 +87,7 @@ async fn actions_need_the_token_and_our_own_host() {
         .to_string();
     assert_eq!(token.len(), 32);
     assert!(page.contains("const WRITABLE = true"));
+    script_parses(&page);
 
     let body = r#"{"project_id":"app","test_command":"cargo test"}"#;
     let no_token = http(port, post(port, "/api/configure", &host, "", body)).await;
@@ -141,6 +164,30 @@ async fn actions_need_the_token_and_our_own_host() {
     )
     .await;
     assert!(snapshot.contains("\"writable\":true"), "{snapshot}");
+
+    // Nothing runs, so there is nothing to stop.
+    let idle = http(port, post(port, "/api/stop", &host, &token_header, "{}")).await;
+    assert!(
+        idle.starts_with("HTTP/1.1 400") && idle.contains("nothing to stop"),
+        "{idle}"
+    );
+
+    // A plan split is for new projects; an existing one keeps its own plan.
+    let split = http(
+        port,
+        post(
+            port,
+            "/api/request",
+            &host,
+            &token_header,
+            r#"{"prompt":"build it","project_id":"app","plan":true}"#,
+        ),
+    )
+    .await;
+    assert!(
+        split.starts_with("HTTP/1.1 400") && split.contains("new project"),
+        "{split}"
+    );
 
     // Deleting needs the project id typed back; a wrong confirmation deletes nothing.
     let unconfirmed = http(

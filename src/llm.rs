@@ -29,6 +29,10 @@ pub struct Usage {
     /// Part of `input_tokens` written to the prompt cache (billed slightly above input).
     #[serde(default)]
     pub cache_write_tokens: u64,
+    /// Exact cost the backend reported (Claude Code), in millionths of a dollar; 0 = none,
+    /// then the contract's prices apply.
+    #[serde(default)]
+    pub reported_cost_micros: u64,
 }
 
 /// Anthropic prompt-cache prices relative to input: reads are 0.1x or less (0.05x on Claude
@@ -116,6 +120,15 @@ pub trait LlmProvider: Send + Sync {
         user_prompt: &'a str,
     ) -> BoxFuture<'a, Result<Completion>>;
 
+    /// A lead's planning decision. Agentic backends must not edit files or append a diff.
+    fn generate_plan<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_prompt: &'a str,
+    ) -> BoxFuture<'a, Result<Completion>> {
+        self.generate(system_prompt, user_prompt)
+    }
+
     /// The answer text only.
     fn complete<'a>(
         &'a self,
@@ -137,8 +150,27 @@ pub fn provider_for(config: &ModelConfig) -> Result<Arc<dyn LlmProvider>> {
 }
 
 /// The production factory: every role talks to the HTTP provider its contract names.
+/// `ANTHROPIC_WORKSPACE_ID` (from `.env`), for API keys that are not scoped to a workspace.
+pub fn anthropic_workspace_id() -> Option<String> {
+    std::env::var("ANTHROPIC_WORKSPACE_ID")
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// The backend for a contract's model block; `claude_code` depends on the role (a Builder
+/// edits, everyone else only reads and runs).
+pub fn provider_for_role(role: Role, config: &ModelConfig) -> Result<Arc<dyn LlmProvider>> {
+    match config.provider {
+        crate::config::ProviderKind::ClaudeCode | crate::config::ProviderKind::Codex => {
+            crate::claude_code::provider(config, role)
+        }
+        _ => provider_for(config),
+    }
+}
+
 pub fn http_providers() -> ProviderFactory {
-    Arc::new(|_role, config| provider_for(config))
+    Arc::new(provider_for_role)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +297,18 @@ impl LlmProvider for MeteredProvider {
         self.inner.model_name()
     }
 
+    fn generate_plan<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_prompt: &'a str,
+    ) -> BoxFuture<'a, Result<Completion>> {
+        Box::pin(async move {
+            let completion = self.inner.generate_plan(system_prompt, user_prompt).await?;
+            self.record(completion.usage);
+            Ok(completion)
+        })
+    }
+
     fn chat<'a>(
         &'a self,
         system_prompt: &'a str,
@@ -299,6 +343,9 @@ impl MeteredProvider {
                 usage,
             };
             let cost_usd = match (completion.usage, self.prices) {
+                (Some(usage), _) if usage.reported_cost_micros > 0 => {
+                    Some(usage.reported_cost_micros as f64 / 1e6)
+                }
                 (Some(usage), (input, output)) if input.is_some() || output.is_some() => {
                     let uncached = usage
                         .input_tokens
@@ -375,6 +422,12 @@ impl HttpChatProvider {
             ProviderKind::Openai => Dialect::OpenAi,
             ProviderKind::Ollama => Dialect::Ollama,
             ProviderKind::Claude => Dialect::Claude,
+            ProviderKind::ClaudeCode | ProviderKind::Codex => {
+                bail!(
+                    "{:?} is not an HTTP backend; use provider_for_role",
+                    config.provider
+                )
+            }
         };
 
         let base_url = match (dialect, config.base_url.as_deref()) {
@@ -618,6 +671,10 @@ impl HttpChatProvider {
                 request = request
                     .header("x-api-key", api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION);
+                // Keys not scoped to a workspace must name one.
+                if let Some(workspace) = anthropic_workspace_id() {
+                    request = request.header("anthropic-workspace-id", workspace);
+                }
             }
             (_, Some(api_key)) => request = request.bearer_auth(api_key),
             (_, None) => {}
@@ -796,6 +853,7 @@ impl HttpChatProvider {
             output_tokens: output.as_u64()?,
             cache_read_tokens: read,
             cache_write_tokens: write,
+            reported_cost_micros: 0,
         })
     }
 }

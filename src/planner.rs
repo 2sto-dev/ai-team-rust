@@ -43,6 +43,9 @@ pub struct HireSuggestion {
     pub skills: Vec<String>,
     #[serde(default)]
     pub reason: String,
+    /// One short English word for the employee id (`EMP-<CODE>-001`), e.g. `SPEECH`.
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 /// The specialists already on staff (subagents), one line each, for the Planner's view of
@@ -161,8 +164,9 @@ Return ONLY valid JSON:
 
 Only if the task clearly needs expertise that no lead and no specialist above has, add a hiring
 suggestion to the same JSON object (the Owner decides; the run goes on with the chosen team):
-"hire":{{"title":"Elixir Developer","manager":"EMP-...","skills":["elixir","otp"],"reason":"why"}}
-The manager is the lead the new specialist would work under. Leave "hire" out otherwise.
+"hire":{{"title":"Elixir Developer","code":"ELIXIR","manager":"EMP-...","skills":["elixir","otp"],"reason":"why"}}
+The manager is the lead the new specialist would work under. The code is one short English word
+in capitals naming the expertise; it becomes the employee id. Leave "hire" out otherwise.
 "#,
             context = project_context(project),
             staff = if staff.is_empty() {

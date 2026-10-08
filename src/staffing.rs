@@ -114,17 +114,37 @@ pub fn build_team(
         if !contract.mcp_servers.is_empty() {
             profile.push_str(&format!(" | tools: {}", contract.mcp_servers.join(", ")));
         }
+        // CLI consultants/advisors may only inspect; only implementers get edit mode.
+        let role = if matches!(
+            model_of(subagent)?.provider,
+            crate::config::ProviderKind::ClaudeCode | crate::config::ProviderKind::Codex
+        ) && !subagent.has(Capability::WriteImplementation)
+        {
+            if subagent.has(Capability::ReviewWork) {
+                Role::Reviewer
+            } else {
+                Role::Architect
+            }
+        } else {
+            Role::Specialist
+        };
         Ok(Specialist::new(
             subagent.id(),
             registry.system_prompt(subagent),
-            providers(Role::Specialist, model_of(subagent)?)?,
+            providers(role, model_of(subagent)?)?,
         )
         .with_toolbox(registry.toolbox_for(subagent))
         .with_profile(profile))
     };
 
     let builder_agent: Box<dyn Agent> = {
-        let team: Vec<Specialist> = if builder.has(Capability::DelegateSubtasks) {
+        // A CLI agent (Claude Code, Codex) writes the code itself: it is the strongest model on
+        // the team, and as a lead it would only split the work for weaker specialists.
+        let cli_builder = matches!(
+            model_of(builder)?.provider,
+            crate::config::ProviderKind::ClaudeCode | crate::config::ProviderKind::Codex
+        );
+        let team: Vec<Specialist> = if builder.has(Capability::DelegateSubtasks) && !cli_builder {
             registry
                 .active_subagents_of(builder.id())
                 .into_iter()

@@ -37,13 +37,35 @@
 <main class="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-12">
   <div class="min-w-0 space-y-6 lg:col-span-8">
 
+    <div id="live" class="empty:hidden"></div>
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title" id="kpi-title">Statistici</h2>
+        <div class="inline-flex rounded-lg border border-stone-200 bg-white p-0.5 text-xs dark:border-stone-800 dark:bg-stone-900" id="kpi-scope">
+          <button data-scope="project" class="cursor-pointer rounded-md px-2.5 py-1">Proiectul curent</button>
+          <button data-scope="all" class="cursor-pointer rounded-md px-2.5 py-1">Toate proiectele</button>
+        </div>
+      </div>
+      <div class="card-body space-y-5">
+        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" id="kpi"></div>
+        <div id="kpi-chart"></div>
+      </div>
+    </section>
+
     <section class="card w">
       <div class="card-head">
         <h2 class="card-title">Cerere nouă</h2>
-        <span class="hidden text-xs text-stone-500 sm:inline dark:text-stone-400">Echipa pornește în fundal; progresul apare pe pagină</span>
+        <div class="flex items-center gap-3">
+          <span class="hidden text-xs text-stone-500 xl:inline dark:text-stone-400">Echipa pornește în fundal; progresul apare pe pagină</span>
+          <button class="btn btn-primary" data-new-project>+ Proiect nou</button>
+        </div>
       </div>
       <div class="card-body space-y-4">
         <div id="jobs" class="space-y-2 empty:hidden"></div>
+        <div id="job-stop-box" class="flex items-center justify-end gap-3" hidden>
+          <span class="text-xs text-stone-500 dark:text-stone-400">Taskul rămâne întrerupt; îl reiei cu „Rulează taskurile rămase”.</span>
+          <button class="btn btn-danger" id="job-stop">Oprește echipa</button>
+        </div>
         <textarea id="req-prompt" rows="4" class="field min-h-28 resize-y" placeholder="Scrie ce vrei să facă echipa, sau o întrebare despre proiect…"></textarea>
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div>
@@ -55,14 +77,20 @@
             <input id="req-name" class="field" placeholder="opțional, ex. ulise">
           </div>
           <div id="req-test-box" class="sm:col-span-2">
-            <label class="label" for="req-test">Comanda de test</label>
-            <div class="flex items-center gap-3">
-              <input id="req-test" class="field font-mono text-xs" value="python -m unittest discover -s tests -v">
+            <label class="label" for="req-test">Comanda de test — porțile pe care codul trebuie să le treacă</label>
+            <div class="flex flex-wrap items-center gap-3 sm:flex-nowrap">
+              <select id="req-kind" class="field sm:w-48 sm:shrink-0" title="Tipul proiectului alege comanda de test"></select>
+              <input id="req-test" class="field font-mono text-xs">
               <label id="req-notest-box" class="flex shrink-0 items-center gap-1.5 text-xs text-stone-600 dark:text-stone-400">
                 <input type="checkbox" id="req-notest" class="accent-brand-600"> fără teste
               </label>
             </div>
           </div>
+          <label id="req-plan-box" class="flex items-start gap-2 rounded-lg border border-stone-200 px-3 py-2.5 text-sm sm:col-span-2 dark:border-stone-800">
+            <input type="checkbox" id="req-plan" class="mt-0.5 accent-brand-600">
+            <span><span class="font-medium">Împarte în milestone-uri și taskuri</span>
+              <span class="block text-xs text-stone-500 dark:text-stone-400">Pentru un proiect întreg (ex. un proiect.md): Planner-ul propune planul, tu îl aprobi, apoi echipa ia taskurile pe rând.</span></span>
+          </label>
         </div>
         <div>
           <label class="label" for="req-files">Fișiere — cu „Pornește echipa” ajung în <code class="font-mono">inputs/</code>; cu „Doar întreabă” sunt citite doar pentru răspuns, nu se salvează</label>
@@ -77,30 +105,10 @@
       </div>
     </section>
 
-    <div id="live" class="empty:hidden"></div>
-    <section>
-      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 class="text-base font-semibold tracking-tight" id="kpi-title">Statistici</h2>
-        <div class="inline-flex rounded-lg border border-stone-200 bg-white p-0.5 text-xs dark:border-stone-800 dark:bg-stone-900" id="kpi-scope">
-          <button data-scope="project" class="cursor-pointer rounded-md px-2.5 py-1">Proiectul curent</button>
-          <button data-scope="all" class="cursor-pointer rounded-md px-2.5 py-1">Toate proiectele</button>
-        </div>
-      </div>
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-7" id="kpi"></div>
-    </section>
-
-    <section id="alerts-box" class="card border-amber-200 dark:border-amber-900/60" hidden>
-      <div class="card-head border-amber-100 dark:border-amber-900/40">
-        <h2 class="card-title flex items-center gap-2">
-          <span class="size-2 rounded-full bg-amber-500"></span> Așteaptă decizia ta
-        </h2>
-      </div>
-      <div class="divide-y divide-stone-100 dark:divide-stone-800" id="alerts"></div>
-    </section>
-
     <section class="card">
       <div class="card-head">
         <h2 class="card-title">Proiecte</h2>
+        <button class="btn w" data-new-project>+ Proiect nou</button>
       </div>
       <div class="card-body space-y-4">
         <div class="flex flex-wrap gap-2" id="projects"></div>
@@ -117,21 +125,23 @@
   </div>
 
   <aside class="min-w-0 space-y-6 lg:col-span-4">
-    <section class="card">
+    <button id="team-card" class="card group block w-full cursor-pointer text-left transition hover:border-brand-300 hover:shadow-md dark:hover:border-brand-700">
       <div class="card-head">
         <h2 class="card-title">Echipa</h2>
-        <span class="text-xs text-stone-500 dark:text-stone-400" id="team-count"></span>
+        <span class="text-xs font-medium text-brand-600 group-hover:underline dark:text-brand-400">Gestionează →</span>
       </div>
-      <div class="card-body space-y-5" id="team"></div>
-      <details class="w border-t border-stone-100 px-5 py-3 dark:border-stone-800">
-        <summary class="cursor-pointer text-sm text-stone-600 dark:text-stone-400">Schimbă statutul unui angajat</summary>
-        <div class="mt-3 flex flex-wrap gap-2">
-          <select id="st-employee" class="field w-auto flex-1"></select>
-          <select id="st-status" class="field w-auto"><option>active</option><option>suspended</option><option>disabled</option></select>
-          <button class="btn" id="st-save">Salvează</button>
-        </div>
-      </details>
+      <div class="card-body space-y-4" id="team-summary"></div>
+    </button>
+
+    <section id="alerts-box" class="card border-amber-200 dark:border-amber-900/60" hidden>
+      <div class="card-head border-amber-100 dark:border-amber-900/40">
+        <h2 class="card-title flex items-center gap-2">
+          <span class="size-2 rounded-full bg-amber-500"></span> Așteaptă decizia ta
+        </h2>
+      </div>
+      <div class="divide-y divide-stone-100 dark:divide-stone-800" id="alerts"></div>
     </section>
+
     <section class="card">
       <div class="card-head">
         <h2 class="card-title">Activitate recentă</h2>
@@ -141,7 +151,24 @@
   </aside>
 </main>
 
-<div id="notice" class="fixed right-4 bottom-4 z-30 hidden max-w-[min(26rem,calc(100vw-2rem))] rounded-lg px-4 py-3 text-sm shadow-lg"></div>
+<div id="team-modal" class="fixed inset-0 z-40 hidden" role="dialog" aria-modal="true" aria-labelledby="team-modal-title">
+  <div class="absolute inset-0 bg-stone-950/50 backdrop-blur-sm" id="team-backdrop"></div>
+  <div class="relative flex h-full w-full flex-col overflow-hidden bg-stone-50 dark:bg-stone-950">
+    <div class="flex items-center justify-between gap-3 border-b border-stone-200 bg-white px-6 py-4 dark:border-stone-800 dark:bg-stone-900">
+      <div>
+        <h2 class="text-lg font-semibold tracking-tight" id="team-modal-title">Echipa</h2>
+        <p class="text-xs text-stone-500 dark:text-stone-400" id="team-modal-sub"></p>
+      </div>
+      <button class="btn" id="team-close">Închide</button>
+    </div>
+    <div class="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_26rem] lg:grid-rows-1">
+      <div class="min-h-0 overflow-y-auto p-6" id="team-chart"></div>
+      <div class="min-h-0 overflow-y-auto border-t border-stone-200 bg-white p-6 lg:border-t-0 lg:border-l dark:border-stone-800 dark:bg-stone-900" id="team-detail"></div>
+    </div>
+  </div>
+</div>
+
+<div id="notice" class="fixed right-4 bottom-4 z-50 hidden max-w-[min(26rem,calc(100vw-2rem))] rounded-lg px-4 py-3 text-sm shadow-lg"></div>
 
 <script>
 const TOKEN = "__AI_TEAM_TOKEN__";
@@ -150,7 +177,6 @@ document.body.dataset.writable = String(WRITABLE);
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-const pct = (part, whole) => whole ? Math.round(part * 100 / whole) + "%" : "–";
 const tokens = (u) => u ? (u.input_tokens + u.output_tokens).toLocaleString("ro-RO") : "–";
 const time = (ms) => new Date(ms).toLocaleTimeString("ro-RO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
@@ -178,7 +204,7 @@ $("mode").textContent = WRITABLE ? "Interfață web" : "Doar citire";
 function notice(text, error = false) {
   const box = $("notice");
   box.textContent = text;
-  box.className = "fixed right-4 bottom-4 z-30 max-w-[min(26rem,calc(100vw-2rem))] rounded-lg px-4 py-3 text-sm shadow-lg " +
+  box.className = "fixed right-4 bottom-4 z-50 max-w-[min(26rem,calc(100vw-2rem))] rounded-lg px-4 py-3 text-sm shadow-lg " +
     (error ? "bg-red-600 text-white" : "bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900");
   clearTimeout(notice.timer);
   notice.timer = setTimeout(() => { box.className += " hidden"; }, error ? 9000 : 5000);
@@ -227,7 +253,7 @@ const STEP_LABEL = {
   VERIFICATION_PASSED: "testele au trecut", VERIFICATION_FAILED: "testele au picat; Builder-ul corectează",
   ADVISOR_REVIEW: "review de securitate", REVIEW_COMPLETED: "review gata", CHANGES_REQUIRED: "cere corecturi",
 };
-const RUN_END = new Set(["DONE", "RUN_FAILED", "HUMAN_REVIEW_REQUIRED"]);
+const RUN_END = new Set(["DONE", "RUN_FAILED", "HUMAN_REVIEW_REQUIRED", "RUN_STOPPED"]);
 const STALL_MS = 2 * 60 * 1000;
 const ago = (ms) => { const s = Math.round(ms / 1000); return s < 90 ? `${s} s` : `${Math.round(s / 60)} min`; };
 
@@ -237,6 +263,10 @@ function liveRun(d) {
   if (!latest || RUN_END.has(latest.event)) return null;
   const age = Date.now() - latest.unix_ms;
   if (!d.job && age > 15 * 60 * 1000) return null;   // an old run that was stopped
+  // A web job that ended after the latest event (stopped, failed or done) left no run going;
+  // a run started from the console writes newer events.
+  const last = (d.recent_jobs || [])[0];
+  if (!d.job && last && last.finished_unix_ms >= latest.unix_ms) return null;
   const names = Object.fromEntries((d.team.employees || []).map((e) => [e.id, e.title]));
   const who = names[latest.actor] || latest.actor;
   return { latest, age, who, label: STEP_LABEL[latest.event] || latest.event };
@@ -253,13 +283,19 @@ function renderJobs(d) {
     const step = run ? `<div class="mt-0.5 text-xs opacity-90">Acum: <b>${esc(run.who)}</b> ${esc(run.label)}${run.latest.task_id ? " · " + esc(run.latest.task_id) : ""} · de ${ago(run.age)}</div>` : "";
     const stalled = run && run.age > STALL_MS && run.latest.event === "AGENT_STARTED" || run && run.age > 2 * STALL_MS;
     items.push(banner(stalled ? "warn" : "run", `<span class="mt-1.5 size-2 shrink-0 animate-pulse rounded-full ${stalled ? "bg-amber-500" : "bg-brand-500"}"></span>
-      <div class="min-w-0"><div>${head}</div>${step}
-      ${stalled ? `<div class="mt-1 text-xs">Modelul nu a mai răspuns de ${ago(run.age)}. Un apel așteaptă până la 3 min (plus 2 reîncercări); dacă durează mult, verifică serverul Ollama sau oprește și repornește.</div>` : ""}</div>`));
+      <div class="min-w-0 flex-1"><div>${head}</div>${step}
+      ${stalled ? `<div class="mt-1 text-xs">Modelul nu a mai răspuns de ${ago(run.age)}. Un apel așteaptă până la 3 min (plus 2 reîncercări); dacă durează mult, verifică serverul Ollama sau apasă „Oprește echipa”.</div>` : ""}</div>`));
   }
+  // The stop button lives outside the redrawn banner: a redraw between press and release
+  // swallowed the click.
+  const stopping = !!d.job && d.job.message.startsWith("stopping");
+  $("job-stop-box").hidden = !d.job;
+  $("job-stop").disabled = stopping;
+  $("job-stop").textContent = stopping ? "Se oprește…" : "Oprește echipa";
   const last = (d.recent_jobs || [])[0];
   if (last && Date.now() - last.finished_unix_ms < 10 * 60 * 1000)
-    items.push(banner(last.status === "done" ? "ok" : "bad",
-      `<span><b>${last.status === "done" ? "Gata" : "Eșuat"}</b> (${esc(last.kind)}${last.project_id ? " · " + esc(last.project_id) : ""}, ${time(last.finished_unix_ms)}): ${esc(last.message)}</span>`));
+    items.push(banner(last.status === "done" ? "ok" : last.status === "stopped" ? "warn" : "bad",
+      `<span><b>${last.status === "done" ? "Gata" : last.status === "stopped" ? "Oprit" : "Eșuat"}</b> (${esc(last.kind)}${last.project_id ? " · " + esc(last.project_id) : ""}, ${time(last.finished_unix_ms)}): ${esc(last.message)}</span>`));
   $("jobs").innerHTML = items.join("");
   $("req-send").disabled = !!d.job;
   $("req-send").title = d.job ? "Echipa lucrează deja; așteaptă să termine." : "";
@@ -272,6 +308,19 @@ function renderLive(d) {
     `<span class="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-brand-500"></span>
      <span>În curs${run.latest.task_id ? " · <b>" + esc(run.latest.task_id) + "</b>" : ""}: ${esc(run.who)} ${esc(run.label)} · de ${ago(run.age)}</span>`) : "";
 }
+
+// Stricter gates for new projects: style and lint failures block the work like failing
+// tests do. A Python project without tests fails too (unittest exits 5 when none ran).
+const TEST_PRESETS = [
+  ["python", "Python (ruff + teste)", "ruff check . && python -m unittest discover -s tests -v"],
+  ["python-basic", "Python (doar teste)", "python -m unittest discover -s tests -v"],
+  ["rust", "Rust (fmt + clippy + teste)", "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"],
+  ["go", "Go (vet + teste)", "go vet ./... && go test ./..."],
+  ["node", "Node / TypeScript", "npm install && npm test"],
+  ["custom", "Altă comandă…", ""],
+];
+$("req-kind").innerHTML = TEST_PRESETS.map(([key, label]) => `<option value="${key}">${label}</option>`).join("");
+$("req-test").value = TEST_PRESETS[0][2];
 
 function renderRequestForm(d) {
   const sel = $("req-project");
@@ -286,7 +335,11 @@ function updateRequestForm() {
   const isNew = $("req-project").value === "";
   $("req-name-box").hidden = !isNew;
   $("req-test-box").hidden = !isNew;
+  $("req-plan-box").hidden = !isNew;
+  const planned = isNew && $("req-plan").checked;
+  $("req-send").textContent = planned ? "Propune planul" : "Pornește echipa";
   $("req-test").disabled = $("req-notest").checked;
+  $("req-kind").disabled = $("req-notest").checked;
   const hasFiles = $("req-files").files.length > 0;
   $("req-ask").disabled = isNew && !hasFiles;
   $("req-ask").title = isNew && !hasFiles ? "Alege un proiect sau atașează un document" : "";
@@ -296,6 +349,13 @@ function updateRequestForm() {
 
 let kpiScope = "project";
 try { kpiScope = localStorage.getItem("ai-team-kpi-scope") || "project"; } catch (_) {}
+
+/// 1.567.224 -> "1,57 M"; 32.577 -> "32,6 k": the exact value stays in the bars' tooltips.
+function compact(n) {
+  if (n >= 1e6) return (n / 1e6).toLocaleString("ro-RO", { maximumFractionDigits: 2 }) + " M";
+  if (n >= 1e4) return (n / 1e3).toLocaleString("ro-RO", { maximumFractionDigits: 1 }) + " k";
+  return n.toLocaleString("ro-RO");
+}
 
 function renderKpi(d) {
   const project = d.projects.find((p) => p.id === selected);
@@ -315,22 +375,73 @@ function renderKpi(d) {
     b.disabled = b.dataset.scope === "project" && !project;
     b.onclick = () => { kpiScope = b.dataset.scope; try { localStorage.setItem("ai-team-kpi-scope", kpiScope); } catch (_) {} renderKpi(data); };
   }
+  // Task counts come from the task list itself, so planned tasks count too (the KPIs only
+  // know tasks that started).
+  const tasks = scope === "project" ? project.tasks : d.projects.flatMap((p) => p.tasks);
+  const count = (test) => tasks.filter(test).length;
+  const done = count((t) => t.status === "DONE");
+  const states = [
+    ["gata", done, "bg-emerald-500"],
+    ["în lucru", count((t) => ["IN_PROGRESS", "REVIEW", "CHANGES_REQUIRED", "ASSIGNED"].includes(t.status)), "bg-brand-500"],
+    ["la tine", count((t) => t.needs_owner), "bg-red-500"],
+    ["planificate", count((t) => ["PLANNED", "BLOCKED"].includes(t.status)), "bg-stone-300 dark:bg-stone-600"],
+    ["anulate", count((t) => t.status === "CANCELLED"), "bg-amber-400"],
+  ].filter(([, n]) => n > 0);
+  const waiting = count((t) => t.needs_owner);
   const perTask = o.done ? Math.round((o.done_usage.input_tokens + o.done_usage.output_tokens) / o.done) : null;
-  const tiles = [
-    ["Taskuri", o.tasks, `${o.done} finalizate`],
-    ["Finalizare", pct(o.done, o.tasks), "din taskurile lucrate"],
-    ["Aprobate din prima", pct(o.first_pass, o.done), "fără corecturi"],
-    ["Corecturi / task", o.done ? (o.correction_cycles / o.done).toFixed(1) : "–", "cicluri medii"],
-    ["Escaladări", pct(o.escalated, o.tasks), o.owner_accepted ? `${o.owner_accepted} acceptate de tine` : "decizii ale tale"],
-    ["Tokeni / task", perTask === null ? "–" : perTask.toLocaleString("ro-RO"), o.approved_with_warnings ? `${o.approved_with_warnings} cu avertismente` : "per task finalizat"],
-    ["Consum total", total.toLocaleString("ro-RO"), cost ? `tokeni · $${cost.toFixed(2)}` : "tokeni, cu planificare și întrebări"],
-  ];
-  $("kpi").innerHTML = tiles.map(([label, value, hint]) => `
-    <div class="card px-4 py-3.5">
-      <div class="text-xs font-medium text-stone-500 dark:text-stone-400">${esc(label)}</div>
-      <div class="mt-1 text-2xl font-semibold tracking-tight tabular-nums">${esc(value)}</div>
-      <div class="mt-0.5 truncate text-xs text-stone-500 dark:text-stone-400">${esc(hint)}</div>
-    </div>`).join("");
+  const quality = o.done ? o.first_pass / o.done : null;
+
+  const tile = (label, value, unit, body, tone) => `
+    <div class="flex flex-col rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900">
+      <div class="flex items-center gap-2 text-xs font-medium text-stone-500 dark:text-stone-400">
+        <span class="size-2 rounded-full ${tone}"></span>${esc(label)}</div>
+      <div class="mt-2 flex items-baseline gap-1.5">
+        <span class="text-3xl font-semibold tracking-tight tabular-nums">${value}</span>
+        <span class="text-sm text-stone-500 dark:text-stone-400">${unit}</span></div>
+      <div class="mt-3 text-xs text-stone-500 dark:text-stone-400">${body}</div>
+    </div>`;
+  const bar = (parts, totalCount) => `<div class="flex h-2 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800">${parts.map(([label, n, color]) =>
+    `<div class="${color}" style="width:${(n * 100 / Math.max(1, totalCount)).toFixed(1)}%" title="${esc(label)}: ${n}"></div>`).join("")}</div>`;
+
+  $("kpi").innerHTML = [
+    tile("Progres", `${done}<span class="text-stone-400">/${tasks.length}</span>`, "taskuri gata",
+      tasks.length
+        ? `${bar(states, tasks.length)}<div class="mt-2 flex flex-wrap gap-x-3 gap-y-1">${states.map(([label, n, color]) =>
+            `<span class="inline-flex items-center gap-1"><span class="size-1.5 rounded-full ${color}"></span>${n} ${esc(label)}</span>`).join("")}</div>`
+        : "Niciun task încă.",
+      "bg-emerald-500"),
+    tile("Calitate", quality === null ? "–" : Math.round(quality * 100) + "%", quality === null ? "" : "aprobate din prima",
+      quality === null
+        ? "Apare după primul task terminat."
+        : `${bar([["din prima", o.first_pass, "bg-emerald-500"], ["cu corecturi", o.done - o.first_pass, "bg-amber-400"]], o.done)}
+           <div class="mt-2">${(o.correction_cycles / o.done).toLocaleString("ro-RO", { maximumFractionDigits: 1 })} corecturi medii pe task</div>`,
+      "bg-brand-500"),
+    tile("Decizii pentru tine", String(waiting), waiting === 1 ? "task așteaptă" : "taskuri așteaptă",
+      [o.escalated ? `${o.escalated} escaladate` : "", o.owner_accepted ? `${o.owner_accepted} acceptate de tine` : "",
+       o.approved_with_warnings ? `${o.approved_with_warnings} aprobate cu avertismente` : ""].filter(Boolean).join(" · ")
+        || "Nimic de decis. Echipa se descurcă singură.",
+      waiting ? "bg-red-500" : "bg-stone-300 dark:bg-stone-600"),
+    tile("Consum", compact(total), "tokeni",
+      [perTask === null ? "" : `${compact(perTask)} pe task terminat`, cost ? `$${cost.toFixed(2)}` : "",
+       "include planificarea și întrebările"].filter(Boolean).join(" · "),
+      "bg-amber-400"),
+  ].join("");
+
+  // Tokens per task (current project) or per project (all), as horizontal bars.
+  const bars = scope === "project"
+    ? project.tasks.filter((t) => t.usage).map((t) => [t.id.split("-").pop(), t.usage.input_tokens + t.usage.output_tokens, t.status, t.title])
+    : d.projects.map((p) => [p.id, p.usage.input_tokens + p.usage.output_tokens, p.status === "DONE" ? "DONE" : "IN_PROGRESS", p.name]);
+  const max = Math.max(1, ...bars.map(([, v]) => v));
+  const barTone = (status) => status === "DONE" ? "bg-emerald-500/80" : status === "FAILED" || status === "HUMAN_REVIEW_REQUIRED" ? "bg-red-500/80" : "bg-brand-500/80";
+  $("kpi-chart").innerHTML = `
+    <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-stone-500">${scope === "project" ? "Tokeni pe task" : "Tokeni pe proiect"}</div>
+    ${bars.length ? `<div class="max-h-48 space-y-1.5 overflow-y-auto pr-1">${bars.map(([label, value, status, title]) => `
+      <div class="grid grid-cols-[4.5rem_1fr_4.5rem] items-center gap-2 text-xs" title="${esc(title)}">
+        <span class="truncate font-mono text-stone-500">${esc(label)}</span>
+        <div class="h-3 rounded-full bg-stone-100 dark:bg-stone-800"><div class="h-full rounded-full ${barTone(status)}" style="width:${Math.max(2, value * 100 / max).toFixed(1)}%"></div></div>
+        <span class="text-right tabular-nums text-stone-600 dark:text-stone-400">${value.toLocaleString("ro-RO")}</span>
+      </div>`).join("")}</div>`
+    : `<div class="text-sm text-stone-500">Nimic consumat încă.</div>`}`;
 }
 
 function alertRow(tone, text, buttons = "") {
@@ -403,7 +514,7 @@ function projectActions(p, d) {
               <ul class="mt-1 space-y-0.5 text-sm text-stone-600 dark:text-stone-400">${m.tasks.map((t) =>
                 `<li><span class="font-mono text-xs">${esc(t.key)}</span> ${esc(t.title)}${t.depends_on.length ? ` <span class="text-xs text-stone-400">după ${esc(t.depends_on.join(", "))}</span>` : ""}</li>`).join("")}</ul></div>`).join("")}</div>
           ${p.pending_plan.rationale ? `<p class="mt-3 text-xs text-stone-500 dark:text-stone-400">${esc(p.pending_plan.rationale)}</p>` : ""}
-          <div class="mt-4 flex gap-2"><button class="btn btn-primary" data-proj="approve">Aprobă planul</button>
+          <div class="mt-4 flex gap-2"><button class="btn btn-primary" data-proj="approve" ${busy ? "disabled" : ""}>Aprobă și pornește echipa</button>
           <button class="btn" data-proj="plan" ${busy ? "disabled" : ""}>Cere alt plan</button></div></div>`
       : `<div class="flex flex-wrap gap-2"><input class="field flex-1" data-draft="plannote:${esc(p.id)}" placeholder="Notă pentru Planner (opțional)" value="${draft("plannote:" + p.id)}">
           <button class="btn btn-primary" data-proj="plan" ${busy ? "disabled" : ""}>Propune plan</button></div>`;
@@ -554,6 +665,8 @@ Scrie numele proiectului ca să confirmi:`);
         selected = null; open.clear(); renderProjects.last = null;
         try { localStorage.removeItem("ai-team-project"); } catch (_) {}
       });
+    } else if (action === "approve") {
+      act(b, "approve", { project_id: id, run: true });
     } else if (action === "plan") {
       act(b, "plan", { project_id: id, note: drafts["plannote:" + id] || null });
     } else {
@@ -641,50 +754,291 @@ function drawFiles() {
   };
 }
 
-function renderTeam(team, kpi) {
-  if (team.error) { $("team").innerHTML = banner("bad", esc(team.error)); return; }
-  const people = team.employees;
-  $("team-count").textContent = `${people.length} angajați`;
-  const director = people.find((e) => e.manager === "OWNER");
-  const leads = people.filter((e) => director && e.manager === director.id).sort((a, b) => a.id.localeCompare(b.id));
-  const stats = (id) => {
-    const k = kpi.by_builder[id] || kpi.by_reviewer[id];
-    return k ? `<span class="text-xs tabular-nums text-stone-500 dark:text-stone-400">${k.done}/${k.tasks} gata</span>` : "";
-  };
-  const badges = (e) => [
-    e.status !== "active" ? `<span class="pill ${TONE.warn}">${esc(e.status)}</span>` : "",
-    e.veto ? `<span class="pill ${TONE.bad}">veto</span>` : "",
-  ].join("");
-  const initials = (name) => name.replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase();
-  $("team").innerHTML = (director ? `<div class="flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
-      <span class="font-medium text-stone-700 dark:text-stone-300">Owner</span> → ${esc(director.title)} <span class="font-mono">${esc(director.id)}</span></div>` : "") +
-    leads.map((lead) => {
-      const subs = people.filter((e) => e.manager === lead.id).sort((a, b) => a.id.localeCompare(b.id));
-      return `<div>
-        <div class="flex items-center gap-2.5">
-          <div class="grid size-8 shrink-0 place-items-center rounded-full bg-brand-100 text-[11px] font-semibold text-brand-700 dark:bg-brand-500/15 dark:text-brand-300">${esc(initials(lead.name))}</div>
-          <div class="min-w-0 flex-1"><div class="truncate text-sm font-medium">${esc(lead.title)} ${badges(lead)}</div>
-            <div class="font-mono text-[11px] text-stone-500 dark:text-stone-400">${esc(lead.id)} · ${esc(lead.model ?? "")}</div></div>
-          ${stats(lead.id)}
-        </div>
-        ${subs.length ? `<ul class="mt-2 ml-4 space-y-1.5 border-l border-stone-200 pl-4 dark:border-stone-800">${subs.map((e) => `
-          <li class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-            <span class="text-stone-700 dark:text-stone-300">${esc(e.title)}</span> ${badges(e)}
-            ${e.skill_packs.map((s) => `<span class="tag">${esc(s)}</span>`).join("")}</li>`).join("")}</ul>` : ""}
-      </div>`;
-    }).join("");
-  const sel = $("st-employee");
-  if (document.activeElement !== sel) {
-    const current = sel.value;
-    sel.innerHTML = people.filter((e) => e.function !== "orchestrator").sort((a, b) => a.id.localeCompare(b.id))
-      .map((e) => `<option value="${esc(e.id)}">${esc(e.id)} (${esc(e.status)})</option>`).join("");
-    if (current) sel.value = current;
-  }
+// ----- team: summary card + settings window ---------------------------------------
+
+const initials = (text) => (text || "?").replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase();
+// Literal classes so Tailwind keeps them.
+const PROVIDER_TONE = {
+  ollama: "bg-stone-100 text-stone-700 ring-stone-500/20 dark:bg-stone-800 dark:text-stone-300 dark:ring-stone-700",
+  claude: "bg-orange-50 text-orange-800 ring-orange-600/20 dark:bg-orange-500/10 dark:text-orange-300 dark:ring-orange-500/30",
+  openai: "bg-teal-50 text-teal-800 ring-teal-600/20 dark:bg-teal-500/10 dark:text-teal-300 dark:ring-teal-500/30",
+  codex: "bg-sky-50 text-sky-800 ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/30",
+  claude_code: "bg-violet-50 text-violet-800 ring-violet-600/20 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-500/30",
+};
+const DEPT_TONE = [
+  "bg-brand-100 text-brand-800 dark:bg-brand-500/15 dark:text-brand-200",
+  "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200",
+  "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200",
+  "bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-200",
+];
+const team = { open: false, selected: null, form: null, status: null };
+
+function teamPeople() { return (data && data.team && data.team.employees) || []; }
+function teamStats(id) {
+  const k = data.kpi.by_builder[id] || data.kpi.by_reviewer[id];
+  return k ? `${k.done}/${k.tasks} gata` : "";
+}
+function providerPill(e) {
+  const m = e.model_config;
+  if (!m) return `<span class="pill ${PROVIDER_TONE.ollama}">control plane</span>`;
+  const label = { claude_code: "Claude Code", codex: "Codex", ollama: "Ollama" }[m.provider] || m.provider;
+  return `<span class="pill ${PROVIDER_TONE[m.provider] || PROVIDER_TONE.ollama}">${esc(label)} · ${esc(m.model)}</span>`;
 }
 
-const EVENT_TONE = { DONE: "bg-emerald-500", APPROVED: "bg-emerald-500", RUN_FAILED: "bg-red-500", VETO_APPLIED: "bg-red-500",
+function renderTeam(teamData) {
+  if (teamData.error) { $("team-summary").innerHTML = banner("bad", esc(teamData.error)); return; }
+  const people = teamData.employees;
+  const director = people.find((e) => e.manager === "OWNER");
+  const leads = people.filter((e) => director && e.manager === director.id).sort((a, b) => a.id.localeCompare(b.id));
+  const byProvider = {};
+  for (const e of people) if (e.model_config) byProvider[e.model_config.provider] = (byProvider[e.model_config.provider] || 0) + 1;
+  const inactive = people.filter((e) => e.status !== "active").length;
+  $("team-summary").innerHTML = `
+    <div class="flex -space-x-2">${leads.map((l, i) => `
+      <div title="${esc(l.title)}" class="grid size-10 place-items-center rounded-full text-xs font-semibold ring-2 ring-white dark:ring-stone-900 ${DEPT_TONE[i % DEPT_TONE.length]}">${esc(initials(l.name))}</div>`).join("")}
+      <div class="grid size-10 place-items-center rounded-full bg-stone-100 text-xs font-medium text-stone-600 ring-2 ring-white dark:bg-stone-800 dark:text-stone-300 dark:ring-stone-900">+${Math.max(people.length - leads.length - 1, 0)}</div>
+    </div>
+    <div class="grid grid-cols-3 gap-2 text-center">
+      <div class="rounded-lg bg-stone-50 py-2 dark:bg-stone-950/60"><div class="text-lg font-semibold tabular-nums">${people.length}</div><div class="text-[11px] text-stone-500">angajați</div></div>
+      <div class="rounded-lg bg-stone-50 py-2 dark:bg-stone-950/60"><div class="text-lg font-semibold tabular-nums">${leads.length}</div><div class="text-[11px] text-stone-500">departamente</div></div>
+      <div class="rounded-lg bg-stone-50 py-2 dark:bg-stone-950/60"><div class="text-lg font-semibold tabular-nums">${data.proposals.length}</div><div class="text-[11px] text-stone-500">propuneri</div></div>
+    </div>
+    <div class="flex flex-wrap gap-1.5">${Object.entries(byProvider).map(([p, n]) =>
+      `<span class="pill ${PROVIDER_TONE[p] || PROVIDER_TONE.ollama}">${esc(p)}: ${n}</span>`).join("")}
+      ${inactive ? `<span class="pill ${TONE.warn}">${inactive} inactivi</span>` : ""}</div>`;
+  if (team.open) renderTeamModal();
+}
+
+function openTeam(id) {
+  team.open = true;
+  if (!team.models) {
+    fetch("/api/models", { cache: "no-store" }).then((r) => r.json()).then((models) => {
+      team.models = models;
+      if (team.open && !editing($("team-detail"))) renderTeamModal();
+    }).catch(() => { team.models = {}; });
+  }
+  if (id) { team.selected = id; team.form = null; team.status = null; }
+  $("team-modal").classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+  renderTeamModal();
+}
+function closeTeam() {
+  team.open = false;
+  team.status = null;
+  $("team-modal").classList.add("hidden");
+  document.body.style.overflow = "";
+}
+
+function personCard(e, tone) {
+  const on = team.selected === e.id;
+  const inactive = e.status !== "active";
+  return `<button data-person="${esc(e.id)}" class="w-full cursor-pointer rounded-xl border bg-white p-3 text-left transition hover:shadow-sm dark:bg-stone-900 ${on
+      ? "border-emerald-500 ring-1 ring-emerald-500"
+      : "border-stone-200 hover:border-stone-300 dark:border-stone-800 dark:hover:border-stone-700"} ${inactive ? "opacity-60" : ""}">
+    <div class="flex items-start gap-2.5">
+      <div class="grid size-9 shrink-0 place-items-center rounded-full text-[11px] font-semibold ${tone}">${esc(initials(e.name || e.title))}</div>
+      <div class="min-w-0 flex-1">
+        <div class="text-sm font-medium leading-snug break-words">${esc(e.title)}</div>
+        <div class="font-mono text-[11px] text-stone-500 dark:text-stone-400">${esc(e.id)}</div>
+        <div class="mt-1.5 flex flex-wrap gap-1">${providerPill(e)}
+          ${e.veto ? `<span class="pill ${TONE.bad}">veto</span>` : ""}
+          ${inactive ? `<span class="pill ${TONE.warn}">${esc(e.status)}</span>` : ""}</div>
+      </div>
+      ${teamStats(e.id) ? `<span class="shrink-0 text-[11px] tabular-nums text-stone-500">${teamStats(e.id)}</span>` : ""}
+    </div></button>`;
+}
+
+function renderTeamModal() {
+  const people = teamPeople();
+  const director = people.find((e) => e.manager === "OWNER");
+  const leads = people.filter((e) => director && e.manager === director.id).sort((a, b) => a.id.localeCompare(b.id));
+  if (!team.selected || !people.some((e) => e.id === team.selected)) team.selected = (leads[0] || people[0] || {}).id;
+  $("team-modal-sub").textContent = `${people.length} angajați · click pe un angajat ca să-l vezi și să-i schimbi setările`;
+  if (!editing($("team-chart"))) {
+    // Connectors: vertical lines with an arrowhead, a horizontal bar joining the departments
+    // (on wide screens, where they sit side by side) and a tick into every specialist.
+    const LINE = "bg-stone-300 dark:bg-stone-700";
+    const arrowDown = (height = "h-6") => `<div class="flex flex-col items-center" aria-hidden="true">
+      <div class="${height} w-0.5 ${LINE}"></div>
+      <div class="h-0 w-0 border-x-[6px] border-t-[7px] border-x-transparent border-t-stone-400 dark:border-t-stone-600"></div></div>`;
+    const count = leads.length;
+    $("team-chart").innerHTML = `
+      <div class="mx-auto flex max-w-xs flex-col items-stretch">
+        <div class="rounded-xl border-2 border-stone-900 bg-stone-900 px-4 py-3 text-center text-white shadow-sm dark:border-white dark:bg-white dark:text-stone-900">
+          <div class="text-sm font-semibold">Owner (tu)</div>
+          <div class="text-[11px] opacity-75">dă proiectele, aprobă, decide</div>
+        </div>
+        ${arrowDown()}
+        ${director ? personCard(director, "bg-stone-900 text-white dark:bg-white dark:text-stone-900") : ""}
+        <div class="flex justify-center" aria-hidden="true"><div class="h-6 w-0.5 ${LINE}"></div></div>
+      </div>
+      <div class="grid gap-x-4 gap-y-6 md:grid-cols-2 xl:grid-cols-4">${leads.map((lead, i) => {
+        const tone = DEPT_TONE[i % DEPT_TONE.length];
+        const subs = people.filter((e) => e.manager === lead.id).sort((a, b) => a.id.localeCompare(b.id));
+        // The horizontal bar runs from the first column's centre to the last one's.
+        const bar = count > 1
+          ? `<div class="absolute top-0 hidden h-0.5 ${LINE} xl:block" style="left:${i === 0 ? "50%" : "-0.5rem"};right:${i === count - 1 ? "50%" : "-0.5rem"}"></div>`
+          : "";
+        return `<div class="flex flex-col">
+          <div class="relative" aria-hidden="true">${bar}${arrowDown("h-5")}</div>
+          <div class="space-y-2 rounded-2xl border border-stone-200 bg-stone-100/60 p-3 dark:border-stone-800 dark:bg-stone-900/40">
+            <div class="px-1 text-[11px] font-semibold uppercase tracking-wide text-stone-500">${esc(lead.department || lead.title)}</div>
+            ${personCard(lead, tone)}
+            ${subs.length ? `<div class="ml-4 space-y-2 border-l-2 border-stone-300 pl-4 dark:border-stone-700">${subs.map((e) => `
+              <div class="relative">
+                <div class="absolute top-6 -left-4 h-0.5 w-4 ${LINE}" aria-hidden="true"></div>
+                <div class="absolute top-[1.3rem] -left-1 h-0 w-0 border-y-[5px] border-l-[6px] border-y-transparent border-l-stone-400 dark:border-l-stone-600" aria-hidden="true"></div>
+                ${personCard(e, tone)}
+              </div>`).join("")}</div>` : ""}
+          </div>
+        </div>`;
+      }).join("")}</div>
+      ${data.proposals.length ? `<div class="mt-6 rounded-xl border border-amber-200 bg-amber-50/60 p-4 dark:border-amber-900/60 dark:bg-amber-500/5">
+        <div class="mb-2 text-sm font-semibold">Propuneri de angajare</div>
+        ${data.proposals.map((id) => `<div class="flex flex-wrap items-center gap-2 py-1 text-sm"><span class="font-mono">${esc(id)}</span>
+          <span class="text-xs text-stone-500">company/proposals/${esc(id)}</span>
+          <button class="btn ml-auto w" data-hire="hire_check|${esc(id)}">Verifică</button>
+          <button class="btn btn-primary w" data-hire="hire_approve|${esc(id)}">Angajează</button></div>`).join("")}
+      </div>` : ""}`;
+    for (const b of $("team-chart").querySelectorAll("[data-person]"))
+      b.onclick = () => { team.selected = b.dataset.person; team.form = null; team.status = null; team.customModel = false; renderTeamModal(); };
+    for (const b of $("team-chart").querySelectorAll("[data-hire]")) b.onclick = () => {
+      const [action, id] = b.dataset.hire.split("|");
+      if (action === "hire_approve" && !confirm(`Angajezi ${id}?`)) return;
+      act(b, action, { employee_id: id });
+    };
+  }
+  if (!editing($("team-detail"))) renderTeamDetail(people.find((e) => e.id === team.selected));
+}
+
+// The three backends offered in the window, with what each needs and its defaults.
+const PROVIDERS = {
+  claude_code: { label: "Claude Code (abonament)", defaults: { model: "sonnet", timeout_secs: 1200 } },
+  codex: { label: "Codex (abonament)", defaults: { model: "default", timeout_secs: 1200 } },
+  ollama: { label: "Ollama (local)", defaults: { model: "qwen3-coder:30b", base_url: "http://10.10.0.14:11434",
+    num_ctx: 49152, num_predict: 8192, timeout_secs: 180 } },
+};
+
+function renderTeamDetail(e) {
+  if (!e) { $("team-detail").innerHTML = ""; renderTeamDetail.last = null; return; }
+  // Redraw only when something shown changed: a periodic redraw replaced an open list
+  // before the Owner's choice landed, so status changes never reached Save.
+  const key = JSON.stringify([e, teamStats(e.id), team.form, team.status, team.customModel, !!team.models]);
+  if (key === renderTeamDetail.last) return;
+  renderTeamDetail.last = key;
+  const m = e.model_config;
+  const list = (items) => items && items.length ? items.map((x) => `<span class="tag">${esc(x)}</span>`).join(" ") : `<span class="text-stone-400">—</span>`;
+  const row = (label, value) => `<div class="grid grid-cols-[7rem_1fr] gap-2 py-1.5 text-sm"><div class="text-stone-500">${label}</div><div class="min-w-0">${value}</div></div>`;
+  if (!team.form && m) team.form = { ...m };
+  const f = team.form || {};
+  const provider = f.provider;
+  const input = (key, label, attrs = "") => `<div><label class="label">${label}</label>
+    <input class="field" data-mfield="${key}" value="${esc(f[key] ?? "")}" ${attrs}></div>`;
+  const options = Object.entries(PROVIDERS).map(([key, p]) => [key, p.label]);
+  if (provider && !PROVIDERS[provider]) options.push([provider, `${provider} (vechi)`]);
+
+  // Model: the real versions for this backend (from /api/models), the current one if it is
+  // not listed, and "Alt model…" for typing any other version.
+  const known = (team.models && team.models[provider]) || [];
+  const choices = provider === "codex" ? [{ id: "default", label: "Implicit (modelul din contul Codex)" }, ...known] : [...known];
+  const custom = f.model !== undefined && f.model !== "" && !choices.some((c) => c.id === f.model);
+  if (custom && !team.customModel) choices.push({ id: f.model, label: `${f.model} (actual)` });
+  const modelSelect = `<div><label class="label">Model</label>
+    <select class="field" data-mfield="model-choice">${choices.map((c) =>
+      `<option value="${esc(c.id)}" ${!team.customModel && f.model === c.id ? "selected" : ""}>${esc(c.label)}</option>`).join("")}
+      <option value="__other" ${team.customModel ? "selected" : ""}>Alt model…</option></select>
+    ${team.customModel ? `<input class="field mt-2" data-mfield="model" value="${esc(f.model ?? "")}" placeholder="ex. claude-sonnet-5 sau gpt-6-astra">` : ""}
+    ${known.length || provider === "codex" ? "" : `<p class="mt-1 text-xs text-stone-500">Lista nu s-a putut încărca; alege „Alt model…”.</p>`}</div>`;
+  let fields = modelSelect;
+  if (provider === "ollama") {
+    fields += `${input("base_url", "Server")}
+      <div class="grid grid-cols-2 gap-3">${input("num_ctx", "Context", `type="number" min="1024"`)}${input("num_predict", "Răspuns max", `type="number" min="64"`)}</div>`;
+  }
+
+  $("team-detail").innerHTML = `
+    <div class="flex items-start gap-3">
+      <div class="grid size-12 shrink-0 place-items-center rounded-full bg-brand-100 text-sm font-semibold text-brand-800 dark:bg-brand-500/15 dark:text-brand-200">${esc(initials(e.name || e.title))}</div>
+      <div class="min-w-0"><div class="text-base font-semibold">${esc(e.title)}</div>
+        <div class="font-mono text-xs text-stone-500">${esc(e.id)} · raportează la ${esc(e.manager)}</div></div>
+    </div>
+    <div class="mt-4 divide-y divide-stone-100 dark:divide-stone-800">
+      ${row("Model", m ? providerPill(e) : "fără model (control plane)")}
+      ${row("Competențe", list(e.skills))}
+      ${row("Skill packs", list(e.skill_packs))}
+      ${row("Unelte MCP", list(e.mcp_servers))}
+      ${row("Rezultate", teamStats(e.id) || `<span class="text-stone-400">—</span>`)}
+    </div>
+    ${e.function === "orchestrator" ? "" : `
+    <div class="w mt-6 space-y-3 rounded-xl border border-stone-200 p-4 dark:border-stone-800">
+      <div class="text-sm font-semibold">Statut</div>
+      <div class="flex gap-2"><select class="field" id="tm-status">${["active", "suspended", "disabled"].map((s) =>
+        `<option ${(team.status ?? e.status) === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+        <button class="btn" id="tm-status-save">Salvează</button></div>
+    </div>
+    ${m ? `<div class="w mt-4 space-y-3 rounded-xl border border-stone-200 p-4 dark:border-stone-800">
+      <div class="text-sm font-semibold">Model</div>
+      <div><label class="label">Furnizor</label><select class="field" data-mfield="provider">${options.map(([v, l]) =>
+        `<option value="${v}" ${provider === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
+      ${fields}
+      ${input("timeout_secs", "Timeout (secunde)", `type="number" min="1"`)}
+      <button class="btn btn-primary" id="tm-model-save">Salvează modelul</button>
+    </div>` : ""}`}`;
+
+  for (const field of $("team-detail").querySelectorAll("[data-mfield]")) {
+    field.oninput = field.onchange = () => {
+      if (field.dataset.mfield === "provider") {
+        // A new backend starts from its own defaults, not from the old one's fields.
+        team.form = { provider: field.value, ...(PROVIDERS[field.value]?.defaults || {}) };
+        team.customModel = false;
+        renderTeamDetail(e);
+        return;
+      }
+      if (field.dataset.mfield === "model-choice") {
+        team.customModel = field.value === "__other";
+        if (!team.customModel) team.form.model = field.value;
+        renderTeamDetail(e);
+        return;
+      }
+      team.form[field.dataset.mfield] = field.value;
+    };
+  }
+  // The choice is kept in `team`, so an automatic refresh cannot reset it before Save.
+  const statusSelect = $("tm-status");
+  if (statusSelect) statusSelect.onchange = () => { team.status = statusSelect.value; };
+  const statusSave = $("tm-status-save");
+  if (statusSave) statusSave.onclick = () => {
+    const status = team.status ?? statusSelect.value;
+    if (status === e.status) return notice(`${e.id} este deja ${status}.`);
+    if (!confirm(`${e.id} devine ${status}?`)) return;
+    act(statusSave, "set_status", { employee_id: e.id, status }, () => { team.status = null; });
+  };
+  const modelSave = $("tm-model-save");
+  if (modelSave) modelSave.onclick = () => {
+    const form = team.form;
+    const keys = form.provider === "ollama" ? ["base_url", "num_ctx", "num_predict"] : [];
+    const model = { provider: form.provider, model: String(form.model || "").trim() || "default" };
+    for (const key of [...keys, "timeout_secs"]) {
+      const value = form[key];
+      if (value === undefined || value === null || String(value).trim() === "") continue;
+      model[key] = key === "base_url" ? String(value).trim() : Number(value);
+    }
+    act(modelSave, "set_model", { employee_id: e.id, model }, () => { team.form = null; team.customModel = false; });
+  };
+}
+
+{
+  $("team-card").onclick = () => openTeam();
+  $("team-close").onclick = closeTeam;
+  $("team-backdrop").onclick = closeTeam;
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && team.open) closeTeam(); });
+}
+
+const EVENT_TONE = { DONE: "bg-emerald-500", APPROVED: "bg-emerald-500", RUN_FAILED: "bg-red-500", RUN_STOPPED: "bg-amber-500", VETO_APPLIED: "bg-red-500",
   VERIFICATION_FAILED: "bg-red-500", CHANGES_REQUIRED: "bg-amber-500", HUMAN_REVIEW_REQUIRED: "bg-amber-500" };
-function renderFeed(events) {
+// Per-call bookkeeping is in the audit for cost analysis; in the feed it is only noise.
+const FEED_HIDDEN = new Set(["LLM_CALL", "TOOL_CALL", "AGENT_STARTED", "CONSULTATION_STARTED", "SUBTASK_STARTED"]);
+function renderFeed(all) {
+  const events = all.filter((e) => !FEED_HIDDEN.has(e.event));
   $("feed").innerHTML = events.length ? events.map((e) => `
     <li class="relative flex gap-3 pb-3 last:pb-0">
       <span class="mt-1.5 size-1.5 shrink-0 rounded-full ${EVENT_TONE[e.event] || "bg-stone-300 dark:bg-stone-600"}"></span>
@@ -706,7 +1060,7 @@ function render() {
   // Do not redraw a form the Owner is typing in; the next refresh catches up.
   if (!editing($("project"))) renderProjects(data);
   renderKpi(data);   // after the projects: it follows the selected one
-  renderTeam(data.team, data.kpi);
+  renderTeam(data.team);
   renderFeed(data.activity);
   if (WRITABLE) { renderJobs(data); if (!editing($("req-project").parentElement)) renderRequestForm(data); }
   else renderLive(data);
@@ -743,6 +1097,28 @@ function readFile(file) {
 if (WRITABLE) {
   $("req-project").onchange = () => { $("req-project").dataset.touched = "1"; updateRequestForm(); };
   $("req-notest").onchange = updateRequestForm;
+  $("req-plan").onchange = updateRequestForm;
+  $("job-stop").onclick = () => {
+    if (!confirm("Oprești echipa acum?\n\nApelul în curs (Codex, Claude Code sau Ollama) se întrerupe și munca din iterația curentă se pierde. Taskul rămâne întrerupt și îl reiei cu „Rulează taskurile rămase”.")) return;
+    act($("job-stop"), "stop", {});
+  };
+  $("req-kind").onchange = () => {
+    const preset = TEST_PRESETS.find(([key]) => key === $("req-kind").value);
+    if (preset && preset[2]) $("req-test").value = preset[2];
+    else { $("req-test").value = ""; $("req-test").focus(); }
+  };
+  $("req-test").oninput = () => {
+    const preset = TEST_PRESETS.find(([, , command]) => command === $("req-test").value.trim());
+    $("req-kind").value = preset ? preset[0] : "custom";
+  };
+  // The project list follows the current project, so a new one needs its own way in.
+  for (const b of document.querySelectorAll("[data-new-project]")) b.onclick = () => {
+    $("req-project").value = "";
+    $("req-project").dataset.touched = "1";
+    updateRequestForm();
+    $("req-prompt").scrollIntoView({ behavior: "smooth", block: "center" });
+    $("req-name").focus();
+  };
   $("req-prompt").oninput = updateRequestForm;
   $("req-send").onclick = async () => {
     const prompt = $("req-prompt").value.trim();
@@ -761,9 +1137,10 @@ if (WRITABLE) {
     if (!projectId) {
       body.name = $("req-name").value.trim() || null;
       body.test_command = $("req-notest").checked ? null : ($("req-test").value.trim() || null);
+      body.plan = $("req-plan").checked;
     }
     act($("req-send"), "request", body, () => {
-      $("req-prompt").value = ""; $("req-files").value = ""; $("req-name").value = "";
+      $("req-prompt").value = ""; $("req-files").value = ""; $("req-name").value = ""; $("req-plan").checked = false;
       if (!projectId) { selected = null; $("req-project").dataset.touched = ""; }
       updateRequestForm();
     });
@@ -790,12 +1167,6 @@ if (WRITABLE) {
     }).then(() => { if ($("answer").textContent.includes("citește")) $("answer").innerHTML = ""; });
   };
   $("pj-add").onclick = () => act($("pj-add"), "add_project", { json: $("pj-json").value }, () => { $("pj-json").value = ""; });
-  $("st-save").onclick = () => {
-    const id = $("st-employee").value;
-    const status = $("st-status").value;
-    if (!confirm(`${id} devine ${status}?`)) return;
-    act($("st-save"), "set_status", { employee_id: id, status });
-  };
 }
 
 refresh();

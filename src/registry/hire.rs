@@ -267,6 +267,64 @@ fn record_hr_event(audit_dir: &Path, event: &str, payload: &serde_json::Value) -
 }
 
 /// JSON strings are valid YAML double-quoted scalars, so this escapes safely.
+/// Replaces an employee's `model:` block in its contract (the rest of the file, comments
+/// included, stays as it is). The registry is validated afterwards and the change reverted
+/// if it became invalid; the change is recorded in the HR audit.
+pub fn set_model(
+    company: &Path,
+    employee_id: &str,
+    model: &crate::config::ModelConfig,
+    audit_dir: &Path,
+) -> Result<()> {
+    model.validate()?;
+    let registry = Registry::load(employees_dir(company))?;
+    let employee = registry
+        .get(employee_id)
+        .with_context(|| format!("unknown employee {employee_id}"))?;
+    anyhow::ensure!(
+        employee.contract.employee_type != EmployeeType::System,
+        "the orchestrator has no model"
+    );
+    let previous = employee.contract.model.clone();
+
+    let path = employee.dir.join(CONTRACT_FILE);
+    let original = fs::read_to_string(&path)?;
+    let lines: Vec<&str> = original.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.trim_end() == "model:")
+        .with_context(|| format!("no top-level 'model:' block in {}", path.display()))?;
+    // The block is every following indented (or blank) line.
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| !line.is_empty() && !line.starts_with(' '))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    let block = serde_yaml_ng::to_string(model).context("cannot serialize model")?;
+
+    let mut updated = lines[..start].join("\n");
+    if start > 0 {
+        updated.push('\n');
+    }
+    updated.push_str("model:\n");
+    updated.push_str(&indent(&block, 2));
+    updated.push_str(&lines[end..].join("\n"));
+    if original.ends_with('\n') && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+
+    fs::write(&path, &updated)?;
+    if let Err(err) = Registry::load(employees_dir(company)) {
+        fs::write(&path, &original)?;
+        return Err(err.context(format!("model change reverted for {employee_id}")));
+    }
+
+    record_hr_event(
+        audit_dir,
+        "MODEL_CHANGED",
+        &json!({ "employee_id": employee_id, "from": previous, "to": model }),
+    )
+}
+
 fn yaml_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\""))
 }

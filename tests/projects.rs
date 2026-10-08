@@ -99,7 +99,10 @@ async fn plan_waits_for_owner_approval_then_creates_ordered_tasks() {
     );
 
     let err = manager.run("shop", None).await.unwrap_err();
-    assert!(format!("{err:#}").contains("no approved plan"));
+    assert!(
+        format!("{err:#}").contains("pending plan; approve it"),
+        "{err:#}"
+    );
 
     let tasks = manager.approve("shop", Some("go")).unwrap();
     let ids: Vec<_> = tasks.iter().map(|task| task.id.as_str()).collect();
