@@ -109,6 +109,8 @@ pub fn snapshot(sources: &Sources) -> Result<Value> {
                 "running": count(TaskStatus::InProgress) + count(TaskStatus::Review) + count(TaskStatus::ChangesRequired),
             },
             "pending_plan": store.pending_plan(id)?,
+            // The project's own statistics (the page shows them for the selected project).
+            "kpi": kpi::collect(&store, Some(id))?.overall,
             "milestones": milestones.iter().map(|milestone| json!({
                 "name": milestone.name,
                 "report": milestone.report_path,

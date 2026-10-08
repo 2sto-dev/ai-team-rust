@@ -79,7 +79,14 @@
 
     <div id="live" class="empty:hidden"></div>
     <section>
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6" id="kpi"></div>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-base font-semibold tracking-tight" id="kpi-title">Statistici</h2>
+        <div class="inline-flex rounded-lg border border-stone-200 bg-white p-0.5 text-xs dark:border-stone-800 dark:bg-stone-900" id="kpi-scope">
+          <button data-scope="project" class="cursor-pointer rounded-md px-2.5 py-1">Proiectul curent</button>
+          <button data-scope="all" class="cursor-pointer rounded-md px-2.5 py-1">Toate proiectele</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-7" id="kpi"></div>
     </section>
 
     <section id="alerts-box" class="card border-amber-200 dark:border-amber-900/60" hidden>
@@ -287,8 +294,27 @@ function updateRequestForm() {
   $("req-hint").textContent = text.endsWith("?") && !isNew ? "Pare o întrebare: „Doar întreabă” nu schimbă codul." : "";
 }
 
-function renderKpi(k) {
-  const o = k.overall;
+let kpiScope = "project";
+try { kpiScope = localStorage.getItem("ai-team-kpi-scope") || "project"; } catch (_) {}
+
+function renderKpi(d) {
+  const project = d.projects.find((p) => p.id === selected);
+  const scope = project ? kpiScope : "all";
+  const o = scope === "project" ? project.kpi : d.kpi.overall;
+  const usage = scope === "project" ? [project.usage] : d.projects.map((p) => p.usage);
+  const total = usage.reduce((sum, u) => sum + u.input_tokens + u.output_tokens, 0);
+  const cost = usage.reduce((sum, u) => sum + (u.cost_usd || 0), 0);
+  $("kpi-title").innerHTML = scope === "project"
+    ? `Statistici — <span class="text-emerald-700 dark:text-emerald-400">${esc(project.id)}</span>`
+    : "Statistici — toate proiectele";
+  for (const b of $("kpi-scope").querySelectorAll("button")) {
+    const on = b.dataset.scope === scope;
+    b.className = "cursor-pointer rounded-md px-2.5 py-1 " + (on
+      ? (b.dataset.scope === "project" ? "bg-emerald-600 text-white" : "bg-brand-600 text-white")
+      : "text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800");
+    b.disabled = b.dataset.scope === "project" && !project;
+    b.onclick = () => { kpiScope = b.dataset.scope; try { localStorage.setItem("ai-team-kpi-scope", kpiScope); } catch (_) {} renderKpi(data); };
+  }
   const perTask = o.done ? Math.round((o.done_usage.input_tokens + o.done_usage.output_tokens) / o.done) : null;
   const tiles = [
     ["Taskuri", o.tasks, `${o.done} finalizate`],
@@ -297,6 +323,7 @@ function renderKpi(k) {
     ["Corecturi / task", o.done ? (o.correction_cycles / o.done).toFixed(1) : "–", "cicluri medii"],
     ["Escaladări", pct(o.escalated, o.tasks), o.owner_accepted ? `${o.owner_accepted} acceptate de tine` : "decizii ale tale"],
     ["Tokeni / task", perTask === null ? "–" : perTask.toLocaleString("ro-RO"), o.approved_with_warnings ? `${o.approved_with_warnings} cu avertismente` : "per task finalizat"],
+    ["Consum total", total.toLocaleString("ro-RO"), cost ? `tokeni · $${cost.toFixed(2)}` : "tokeni, cu planificare și întrebări"],
   ];
   $("kpi").innerHTML = tiles.map(([label, value, hint]) => `
     <div class="card px-4 py-3.5">
@@ -396,6 +423,16 @@ function projectActions(p, d) {
         ${input("busd", "Buget USD (0 = fără limită)", "", `type="number" min="0" step="0.01" placeholder="neschimbat"`)}
       </div>
       <div class="mt-3"><button class="btn" data-proj="configure">Salvează setările</button></div>
+    </details>
+    <details class="rounded-lg border border-red-200 px-4 py-3 dark:border-red-900/60">
+      <summary class="cursor-pointer text-sm text-red-700 dark:text-red-400">Zonă periculoasă</summary>
+      <div class="mt-3 space-y-3 text-sm">
+        <p class="text-stone-600 dark:text-stone-400">Ștergerea e <b>definitivă</b>: proiectul dispare din aplicație împreună cu
+          taskurile, istoricul, consumul și statisticile lui (KPI), folderul git
+          <code class="font-mono text-xs">data/workspaces/${esc(p.id)}</code>, rapoartele și auditul rulărilor.
+          Un repo remote, dacă există, nu e atins.</p>
+        <button class="btn btn-danger border-red-300 dark:border-red-800" data-proj="delete" ${busy ? "disabled" : ""}>Șterge definitiv proiectul</button>
+      </div>
     </details></div>`;
 }
 
@@ -415,15 +452,16 @@ function renderProjects(d) {
     const on = p.id === selected;
     const progress = p.counts.total ? Math.round(p.counts.done * 100 / p.counts.total) : 0;
     return `<button data-id="${esc(p.id)}" class="group min-w-36 cursor-pointer rounded-lg border px-3 py-2 text-left transition ${on
-      ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500 dark:bg-brand-500/10"
+      ? "border-emerald-500 bg-emerald-50 ring-1 ring-emerald-500 dark:border-emerald-500 dark:bg-emerald-500/10"
       : "border-stone-200 hover:border-stone-300 hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-800/60"}">
-      <div class="flex items-center justify-between gap-2"><span class="text-sm font-medium">${esc(p.id)}</span>
+      <div class="flex items-center justify-between gap-2"><span class="text-sm font-medium ${on ? "text-emerald-800 dark:text-emerald-300" : ""}">${esc(p.id)}</span>
+        ${on ? `<span class="pill bg-emerald-600 text-white ring-emerald-600">curent</span>` : ""}
         ${p.counts.waiting ? `<span class="size-2 rounded-full bg-red-500" title="așteaptă decizia ta"></span>` : ""}</div>
-      <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-stone-200 dark:bg-stone-800"><div class="h-full rounded-full bg-brand-500" style="width:${progress}%"></div></div>
+      <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-stone-200 dark:bg-stone-800"><div class="h-full rounded-full ${on ? "bg-emerald-500" : "bg-brand-500"}" style="width:${progress}%"></div></div>
       <div class="mt-1 text-xs text-stone-500 dark:text-stone-400">${esc(p.status)} · ${p.counts.done}/${p.counts.total}</div></button>`;
   }).join("");
   for (const b of $("projects").querySelectorAll("button"))
-    b.onclick = () => { selected = b.dataset.id; try { localStorage.setItem("ai-team-project", selected); } catch (_) {} render(); };
+    b.onclick = () => { selected = b.dataset.id; try { localStorage.setItem("ai-team-project", selected); } catch (_) {} renderProjects.last = null; render(); };
 
   const p = d.projects.find((p) => p.id === selected);
   // Redraw only when something shown changed: keeps the scroll of an open file or log.
@@ -458,7 +496,10 @@ function renderProjects(d) {
     <div class="text-[11px] font-medium uppercase tracking-wide text-stone-500 dark:text-stone-400">${label}</div>
     <div class="mt-0.5 truncate text-sm">${value}</div></div>`;
   $("project").innerHTML = `
-    <div class="mb-1 text-base font-semibold">${esc(p.name)}</div>
+    <div class="mb-3 flex flex-wrap items-center gap-2 border-l-4 border-emerald-500 pl-3">
+      <span class="pill bg-emerald-50 text-emerald-700 ring-emerald-600/30 dark:bg-emerald-500/10 dark:text-emerald-300">● proiect curent: ${esc(p.id)}</span>
+      <span class="text-base font-semibold">${esc(p.name)}</span>
+    </div>
     <div class="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
       ${chip("Teste", p.test_command ? `<code class="font-mono text-xs">${esc(p.test_command)}</code>` : `<span class="text-amber-600 dark:text-amber-400">fără comandă de test</span>`)}
       ${chip("Buget", esc(p.budget ?? "fără limită"))}
@@ -503,6 +544,16 @@ function renderProjects(d) {
         project_id: id, test_command: text("test:" + id), test_timeout: num("timeout:" + id),
         remote: text("remote:" + id), budget_tokens: num("btok:" + id), budget_usd: num("busd:" + id),
       }, () => { for (const k of ["test", "timeout", "remote", "btok", "busd"]) delete drafts[k + ":" + id]; });
+    } else if (action === "delete") {
+      const typed = prompt(`Ștergere DEFINITIVĂ a proiectului ${id}: taskuri, istoric, statistici, folder git, rapoarte.
+
+Scrie numele proiectului ca să confirmi:`);
+      if (typed === null) return;
+      if (typed.trim() !== id) return notice("Numele nu se potrivește; nu s-a șters nimic.", true);
+      act(b, "delete_project", { project_id: id, confirm: typed.trim() }, () => {
+        selected = null; open.clear(); renderProjects.last = null;
+        try { localStorage.removeItem("ai-team-project"); } catch (_) {}
+      });
     } else if (action === "plan") {
       act(b, "plan", { project_id: id, note: drafts["plannote:" + id] || null });
     } else {
@@ -651,10 +702,10 @@ function editing(container) {
 
 function render() {
   if (!data) return;
-  renderKpi(data.kpi);
   renderAlerts(data);
   // Do not redraw a form the Owner is typing in; the next refresh catches up.
   if (!editing($("project"))) renderProjects(data);
+  renderKpi(data);   // after the projects: it follows the selected one
   renderTeam(data.team, data.kpi);
   renderFeed(data.activity);
   if (WRITABLE) { renderJobs(data); if (!editing($("req-project").parentElement)) renderRequestForm(data); }

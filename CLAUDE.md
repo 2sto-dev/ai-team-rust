@@ -23,6 +23,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - `project run <id> [--max-tasks N]`, `project status <id>`
     - `task show <id>`
     - Owner decisions: `task resume <id> [--note] [--iterations N]`, `task accept <id>`, `task cancel <id>`
+    - `project delete <id> [--yes]`, or the web `delete_project` action, which needs `confirm` equal to the id and is refused while a web job runs on the project.
+      - `Store::delete_project` removes, in one transaction: dependencies, runs, owner decisions, tasks, milestones, plans and the project row.
+      - It also removes artifacts only when the deleted project's tasks referenced them and no remaining task does (`artifact_refs`). Never garbage-collect other projects' unreferenced artifacts: earlier iterations live only there and in git history.
+      - `ProjectManager::delete_project` then deletes the workspace (`remove_tree` clears git's read-only flags), the reports and the run audit files. KPIs are computed from tasks, so a project's statistics go with it.
     - `project configure <id> [--test-command "..."] [--test-timeout N] [--remote <url>] [--budget-tokens N] [--budget-usd X]` (`ProjectSettings`; 0 removes a budget limit)
     - `web [--port 8787]` / `dashboard [--port 8787]`: the Owner's web page on 127.0.0.1 (`src/web.rs` server, `src/dashboard.rs` snapshot, `src/dashboard.html` embedded with `include_str!`). `web` adds every CLI action; `dashboard` is read-only.
       - A hand-rolled HTTP/1.1 loop on tokio `TcpListener` (Content-Length bodies up to 40 MB); no web framework.

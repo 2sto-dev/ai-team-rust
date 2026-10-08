@@ -64,6 +64,40 @@ pub struct ProjectSettings {
     pub budget_usd: Option<f64>,
 }
 
+/// What `ProjectManager::delete_project` removed.
+#[derive(Debug, Clone)]
+pub struct ProjectDeletion {
+    pub project_id: String,
+    pub workspace_removed: bool,
+    pub audit_files: usize,
+    pub reports: usize,
+    pub artifacts: usize,
+}
+
+/// Deletes a folder tree, clearing read-only flags first (git marks its objects read-only,
+/// which makes a plain `remove_dir_all` fail on Windows).
+fn remove_tree(root: &std::path::Path) -> Result<()> {
+    fn writable(path: &std::path::Path) {
+        if let Ok(meta) = fs::symlink_metadata(path) {
+            if meta.is_dir() {
+                if let Ok(entries) = fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        writable(&entry.path());
+                    }
+                }
+            } else {
+                let mut permissions = meta.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(path, permissions);
+            }
+        }
+    }
+    writable(root);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 pub struct ProjectManager<'a> {
     store: &'a Store,
     orchestrator: &'a Orchestrator,
@@ -602,6 +636,58 @@ impl<'a> ProjectManager<'a> {
             }
         }
         Ok(text)
+    }
+
+    // -- deletion -------------------------------------------------------------
+
+    /// Permanently deletes a project: its records and statistics, its git workspace, its
+    /// milestone reports, the audit trails of its runs and the artifacts nothing else uses.
+    /// The Owner's remote repository, if any, is not touched. Irreversible.
+    pub fn delete_project(&self, project_id: &str) -> Result<ProjectDeletion> {
+        let workspace = self.main_workspace(project_id);
+        let deleted = self.store.delete_project(project_id)?;
+        let base = self
+            .store
+            .root()
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        // Stored paths are relative to the folder the CLI ran in: try it, then the data's parent.
+        let remove = |path: &PathBuf| {
+            [path.clone(), base.join(path)]
+                .iter()
+                .any(|candidate| candidate.is_file() && fs::remove_file(candidate).is_ok())
+        };
+        let audit_files = deleted
+            .audit_files
+            .iter()
+            .filter(|path| remove(path))
+            .count();
+        let mut reports = deleted.reports.iter().filter(|path| remove(path)).count();
+        // Reports written before a path was recorded follow the `<project>-M<n>.md` pattern.
+        if let Ok(entries) = fs::read_dir(self.store.root().join("reports")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(&format!("{project_id}-M"))
+                    && name.ends_with(".md")
+                    && fs::remove_file(entry.path()).is_ok()
+                {
+                    reports += 1;
+                }
+            }
+        }
+        let workspace_removed = workspace.is_dir();
+        if workspace_removed {
+            remove_tree(&workspace)
+                .with_context(|| format!("cannot delete {}", workspace.display()))?;
+        }
+        Ok(ProjectDeletion {
+            project_id: project_id.to_string(),
+            workspace_removed,
+            audit_files,
+            reports,
+            artifacts: deleted.artifacts_removed,
+        })
     }
 
     // -- owner questions ----------------------------------------------------

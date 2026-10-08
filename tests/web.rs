@@ -141,6 +141,34 @@ async fn actions_need_the_token_and_our_own_host() {
     )
     .await;
     assert!(snapshot.contains("\"writable\":true"), "{snapshot}");
+
+    // Deleting needs the project id typed back; a wrong confirmation deletes nothing.
+    let unconfirmed = http(
+        port,
+        post(
+            port,
+            "/api/delete_project",
+            &host,
+            &token_header,
+            r#"{"project_id":"app","confirm":"ap"}"#,
+        ),
+    )
+    .await;
+    assert!(unconfirmed.starts_with("HTTP/1.1 400"), "{unconfirmed}");
+    assert!(store.project("app").is_ok());
+    let deleted = http(
+        port,
+        post(
+            port,
+            "/api/delete_project",
+            &host,
+            &token_header,
+            r#"{"project_id":"app","confirm":"app"}"#,
+        ),
+    )
+    .await;
+    assert!(deleted.starts_with("HTTP/1.1 200"), "{deleted}");
+    assert!(store.project("app").is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]

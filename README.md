@@ -544,7 +544,13 @@ cargo run -- web --port 9000
 - **decizii pe taskuri oprite:** reia (cu notă și iterații), acceptă, anulează;
 - **proiect:** rulează taskurile rămase, setări (comandă de test, timeout, remote, bugete), plan
   propus / aprobat, proiect nou dintr-un JSON ca `projects/*.json`;
-- **echipă:** verifică / aprobă propunerile de angajare, schimbă statutul unui angajat.
+- **echipă:** verifică / aprobă propunerile de angajare, schimbă statutul unui angajat;
+- **ștergere definitivă a unui proiect:** la proiect → „Zonă periculoasă” → „Șterge definitiv
+  proiectul” (ceri confirmarea scriind numele proiectului). Dispar: proiectul din aplicație,
+  taskurile, istoricul, consumul și statisticile lui (KPI-urile se recalculează fără el), folderul
+  git din `data/workspaces/`, rapoartele, auditul rulărilor și artefactele pe care nu le mai
+  folosește alt proiect. Un repo remote nu e atins. Din linia de comandă:
+  `cargo run -- project delete <id>` (cere numele ca confirmare; `--yes` sare peste întrebare).
 
 Echipa lucrează la un singur lucru odată (ca în CLI); o a doua pornire primește „echipa lucrează
 deja”. Nu rula în același timp consola și interfața web pe același proiect.
@@ -566,7 +572,9 @@ trimite comenzi. `dashboard` nu are token și refuză orice acțiune.
 O pagină web locală, doar de citit, care se reîmprospătează la 5 secunde (vezi o rulare în timp
 ce se întâmplă, inclusiv dintr-o consolă deschisă în paralel):
 
-- **KPI**-urile echipei;
+- **Statisticile** proiectului selectat (sau, cu comutatorul, ale tuturor proiectelor): taskuri,
+  finalizare, aprobări din prima, corecturi, escaladări, tokeni per task și consumul total;
+- **proiectul curent** e marcat cu verde în lista de proiecte și în titlul panoului;
 - **Așteaptă decizia ta:** taskuri oprite (resume/accept/cancel), bugete atinse, propuneri de
   angajare;
 - **Proiecte:** taskurile cu stare, iterații, teste, tokeni; click pe un task arată echipa,

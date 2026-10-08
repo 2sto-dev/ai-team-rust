@@ -124,6 +124,52 @@ pub struct TaskRecord {
     pub error: Option<String>,
 }
 
+/// Artifact hashes the selected tasks point to: their spec and implementation, and every
+/// `artifact:<hash>` reference in their saved state.
+fn artifact_refs(
+    conn: &Connection,
+    sql: &str,
+    project_id: Option<&str>,
+) -> Result<std::collections::HashSet<String>> {
+    let mut statement = conn.prepare(sql)?;
+    let map = |row: &Row<'_>| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    };
+    let rows = match project_id {
+        Some(id) => statement
+            .query_map(params![id], map)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        None => statement
+            .query_map([], map)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
+    let mut hashes = std::collections::HashSet::new();
+    for (spec, implementation, state) in rows {
+        hashes.extend(spec);
+        hashes.extend(implementation);
+        for piece in state.unwrap_or_default().split("artifact:").skip(1) {
+            let hash: String = piece.chars().take_while(char::is_ascii_hexdigit).collect();
+            if hash.len() == 64 {
+                hashes.insert(hash);
+            }
+        }
+    }
+    Ok(hashes)
+}
+
+/// What `Store::delete_project` removed, and the files left for the caller to delete.
+#[derive(Debug, Clone)]
+pub struct DeletedProject {
+    /// Audit trails of the project's runs, as stored (relative to the CLI's working folder).
+    pub audit_files: Vec<PathBuf>,
+    pub reports: Vec<PathBuf>,
+    pub artifacts_removed: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct OwnerDecision {
     pub task_id: Option<String>,
@@ -188,6 +234,98 @@ impl Store {
         self.conn
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    // -- deletion -------------------------------------------------------------
+
+    /// Permanently removes a project and everything recorded about it, in one transaction:
+    /// plans, milestones, tasks (with their saved state and usage), dependencies, runs and the
+    /// Owner's decisions. Artifacts no other project references are removed too. Returns the
+    /// files the caller must delete (audit trails of the runs, milestone reports).
+    pub fn delete_project(&self, project_id: &str) -> Result<DeletedProject> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                params![project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)?;
+        anyhow::ensure!(exists, "unknown project {project_id}");
+
+        let strings = |sql: &str| -> Result<Vec<String>> {
+            let mut statement = tx.prepare(sql)?;
+            let rows = statement
+                .query_map(params![project_id], |row| row.get::<_, Option<String>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows.into_iter().flatten().collect())
+        };
+        let audit_files = strings(
+            "SELECT audit_file FROM runs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+        )?;
+        let reports = strings("SELECT report_path FROM milestones WHERE project_id = ?1")?;
+
+        let owned = artifact_refs(
+            &tx,
+            "SELECT spec_hash, impl_hash, state_json FROM tasks WHERE project_id = ?1",
+            Some(project_id),
+        )?;
+
+        let in_project = "SELECT id FROM tasks WHERE project_id = ?1";
+        tx.execute(
+            &format!(
+                "DELETE FROM task_dependencies WHERE task_id IN ({in_project}) OR depends_on IN ({in_project})"
+            ),
+            params![project_id],
+        )?;
+        tx.execute(
+            &format!("DELETE FROM runs WHERE task_id IN ({in_project})"),
+            params![project_id],
+        )?;
+        for table in [
+            "owner_decisions",
+            "tasks",
+            "milestones",
+            "plans",
+            "projects",
+        ] {
+            let column = if table == "projects" {
+                "id"
+            } else {
+                "project_id"
+            };
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE {column} = ?1"),
+                params![project_id],
+            )?;
+        }
+
+        // Only this project's artifacts may go, and only those no remaining task uses
+        // (artifacts are shared by content). Other projects' artifacts are never touched.
+        let referenced = artifact_refs(
+            &tx,
+            "SELECT spec_hash, impl_hash, state_json FROM tasks",
+            None,
+        )?;
+        let orphans: Vec<String> = owned
+            .into_iter()
+            .filter(|hash| !referenced.contains(hash))
+            .collect();
+        for hash in &orphans {
+            tx.execute("DELETE FROM artifacts WHERE hash = ?1", params![hash])?;
+        }
+        tx.commit()?;
+        drop(conn);
+
+        for hash in &orphans {
+            let _ = fs::remove_file(self.artifact_path(hash));
+        }
+        Ok(DeletedProject {
+            audit_files: audit_files.into_iter().map(PathBuf::from).collect(),
+            reports: reports.into_iter().map(PathBuf::from).collect(),
+            artifacts_removed: orphans.len(),
+        })
     }
 
     // -- artifacts ----------------------------------------------------------

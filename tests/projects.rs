@@ -601,3 +601,59 @@ async fn dashboard_snapshot_shows_projects_kpis_team_and_activity() {
     // The feed carries events, never their payloads (prompts, files).
     assert!(activity.iter().all(|event| event.get("payload").is_none()));
 }
+
+#[tokio::test]
+async fn deleting_a_project_removes_it_everywhere_and_keeps_the_others() {
+    let env = env();
+    planned(&env, 3).await;
+    let orchestrator = env.orchestrator(test_providers());
+    let manager = ProjectManager::new(&env.store, &orchestrator);
+    manager.run("shop", None).await.unwrap();
+
+    // A second project that must survive untouched.
+    let mut other = project_with(3);
+    other.project_id = "keep".to_string();
+    env.store.add_project(&other).unwrap();
+    let kept = manager.add_request("keep", "Write notes", &[]).unwrap();
+    manager.run("keep", None).await.unwrap();
+
+    let workspace = env.root.join("data/workspaces/shop");
+    assert!(workspace.join(".git").is_dir());
+    assert!(env.root.join("data/reports/shop-M1.md").is_file());
+    assert_eq!(
+        ai_team::kpi::collect(&env.store, None)
+            .unwrap()
+            .overall
+            .tasks,
+        4
+    );
+
+    // An artifact no task points to (e.g. an earlier iteration of another project).
+    let unrelated = env
+        .store
+        .put_artifact("an older iteration elsewhere")
+        .unwrap();
+
+    let deleted = manager.delete_project("shop").unwrap();
+    assert!(
+        env.store.artifact_path(&unrelated).is_file(),
+        "deleting a project never touches artifacts it did not own"
+    );
+
+    assert!(deleted.workspace_removed && deleted.reports >= 1);
+    assert!(env.store.project("shop").is_err());
+    assert!(env.store.tasks("shop").unwrap().is_empty());
+    assert!(!workspace.exists());
+    assert!(!env.root.join("data/reports/shop-M1.md").exists());
+    // Statistics are recomputed from what is left.
+    let kpi = ai_team::kpi::collect(&env.store, None).unwrap();
+    assert_eq!((kpi.overall.tasks, kpi.overall.done), (1, 1));
+    // The other project keeps its records, workspace and artifacts.
+    let state = env.store.load_task_state(&kept.id).unwrap().unwrap();
+    assert!(state.implementation.is_some());
+    assert!(env.root.join("data/workspaces/keep/.git").is_dir());
+    assert!(
+        manager.delete_project("shop").is_err(),
+        "deleting twice is an error"
+    );
+}

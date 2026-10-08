@@ -9,8 +9,8 @@ use std::{fmt, str::FromStr};
 
 use anyhow::bail;
 
-pub use manager::{ProjectManager, ProjectSettings, RunSummary};
-pub use store::{MilestoneRecord, OwnerDecision, ProjectRecord, Store, TaskRecord};
+pub use manager::{ProjectDeletion, ProjectManager, ProjectSettings, RunSummary};
+pub use store::{DeletedProject, MilestoneRecord, OwnerDecision, ProjectRecord, Store, TaskRecord};
 
 /// Task states (firma.md §13). Transitions are made by the control plane only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

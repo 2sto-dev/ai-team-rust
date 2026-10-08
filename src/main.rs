@@ -172,6 +172,14 @@ enum ProjectAction {
     /// Milestones, tasks and what waits for the Owner.
     Status { project_id: String },
 
+    /// Permanently delete a project: records, statistics, workspace, reports, run audits.
+    Delete {
+        project_id: String,
+        /// Skip the confirmation question.
+        #[arg(long)]
+        yes: bool,
+    },
+
     /// Owner settings that can change after `project add`.
     Configure {
         project_id: String,
@@ -795,6 +803,35 @@ async fn projects(employees_dir: &Path, data_dir: &Path, action: ProjectAction) 
             println!("Project {project_id}: {}", summary.project_status);
             println!("Usage so far: {}", manager.project_usage(&project_id)?);
             print_owner_actions(&store, &project_id)?;
+        }
+        ProjectAction::Delete { project_id, yes } => {
+            store.project(&project_id)?;
+            if !yes {
+                use std::io::Write as _;
+                print!(
+                    "Delete project {project_id} permanently (records, statistics, workspace,                      reports, run audits)? Type the project id to confirm: "
+                );
+                std::io::stdout().flush()?;
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                anyhow::ensure!(
+                    answer.trim() == project_id,
+                    "not confirmed; nothing deleted"
+                );
+            }
+            let deleted = manager.delete_project(&project_id)?;
+            println!(
+                "{} deleted: workspace {}, {} audit file(s), {} report(s), {} artifact(s)",
+                deleted.project_id,
+                if deleted.workspace_removed {
+                    "removed"
+                } else {
+                    "none"
+                },
+                deleted.audit_files,
+                deleted.reports,
+                deleted.artifacts
+            );
         }
         ProjectAction::Configure {
             project_id,

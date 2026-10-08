@@ -730,6 +730,30 @@ async fn act(server: Arc<Server>, action: &str, body: Value) -> Result<Value> {
             .await?;
             Ok(json!({ "message": message }))
         }
+        "delete_project" => {
+            let project_id = field(&body, "project_id")?;
+            // The page asks the Owner to type the id: a stray click deletes nothing.
+            anyhow::ensure!(
+                optional(&body, "confirm").as_deref() == Some(project_id.as_str()),
+                "type the project id to confirm the deletion"
+            );
+            if let Some(job) = &server.jobs.lock().expect("jobs lock").current
+                && job.project_id.as_deref() == Some(project_id.as_str())
+            {
+                bail!("busy: the team is working on {project_id}; wait for it to finish");
+            }
+            let deleted = blocking(move || {
+                let (store, orchestrator) = open(&sources)?;
+                ProjectManager::new(&store, &orchestrator).delete_project(&project_id)
+            })
+            .await?;
+            Ok(json!({ "message": format!(
+                "{} deleted permanently: workspace {}, {} audit file(s), {} report(s), {} artifact(s)",
+                deleted.project_id,
+                if deleted.workspace_removed { "removed" } else { "none" },
+                deleted.audit_files, deleted.reports, deleted.artifacts
+            ) }))
+        }
         "add_project" => {
             let raw = field(&body, "json")?;
             let message = blocking(move || {
