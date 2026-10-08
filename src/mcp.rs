@@ -46,6 +46,28 @@ pub struct McpServerConfig {
     pub env_from: Vec<String>,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+    /// Offer this server's tools only when the prompt contains one of these words (case does
+    /// not matter), e.g. `[rust, cargo, Cargo.toml]`. Empty: always. Tool schemas are sent
+    /// with every call, so a server the task cannot use only costs tokens.
+    #[serde(default)]
+    pub offer_when: Vec<String>,
+}
+
+impl McpServerConfig {
+    /// Whether `prompt` is about this server's domain.
+    pub fn offered_for(&self, prompt: &str) -> bool {
+        if self.offer_when.is_empty() {
+            return true;
+        }
+        let words: std::collections::HashSet<String> = prompt
+            .split(|c: char| !(c.is_alphanumeric() || matches!(c, '.' | '_' | '-')))
+            .map(|word| word.trim_matches('.').to_lowercase())
+            .filter(|word| !word.is_empty())
+            .collect();
+        self.offer_when
+            .iter()
+            .any(|keyword| words.contains(&keyword.to_lowercase()))
+    }
 }
 
 fn default_timeout_secs() -> u64 {
@@ -378,6 +400,31 @@ impl Toolbox {
         Ok(&self.connected().await?.specs)
     }
 
+    /// The tools worth offering for `prompt`: servers whose `offer_when` does not match are
+    /// left out, and when none matches no server is started at all.
+    pub async fn specs_for(&self, prompt: &str) -> Result<Vec<ToolSpec>> {
+        let offered: Vec<&str> = self
+            .servers
+            .iter()
+            .filter(|(_, config)| config.offered_for(prompt))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if offered.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .specs()
+            .await?
+            .iter()
+            .filter(|spec| {
+                offered
+                    .iter()
+                    .any(|server| spec.name.starts_with(&format!("{server}__")))
+            })
+            .cloned()
+            .collect())
+    }
+
     /// Runs one tool call. An unknown tool or a failing call comes back as an error outcome
     /// for the model to read, not as a failure of the whole task.
     pub async fn call(&self, qualified: &str, arguments: Value) -> Result<ToolOutcome> {
@@ -402,6 +449,30 @@ impl Toolbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn servers_are_offered_only_for_their_domain() {
+        let mut rust: McpServerConfig = serde_yaml_ng::from_str(
+            "command: never-started
+offer_when: [rust, cargo.toml]",
+        )
+        .unwrap();
+        assert!(rust.offered_for("Write a Rust library with Cargo.toml."));
+        assert!(rust.offered_for(
+            "FILES:
+--- Cargo.toml
+"
+        ));
+        assert!(!rust.offered_for("A Python module; trust the tests."));
+        rust.offer_when.clear();
+        assert!(rust.offered_for("anything"));
+
+        // Nothing offered: no server is started (the command does not even exist).
+        let mut only_rust = rust.clone();
+        only_rust.offer_when = vec!["rust".to_string()];
+        let toolbox = Toolbox::new(vec![("rustdocs".to_string(), only_rust)], ".");
+        assert!(toolbox.specs_for("Python only").await.unwrap().is_empty());
+    }
 
     #[test]
     fn qualified_names_fit_every_dialect() {

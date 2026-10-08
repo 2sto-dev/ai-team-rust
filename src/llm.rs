@@ -20,9 +20,21 @@ use crate::{
 /// Tokens a backend reported for one call.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
+    /// Every prompt token, cached or not (budgets and KPIs count the whole prompt).
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Part of `input_tokens` read from the provider's prompt cache (billed at a fraction).
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Part of `input_tokens` written to the prompt cache (billed slightly above input).
+    #[serde(default)]
+    pub cache_write_tokens: u64,
 }
+
+/// Anthropic prompt-cache prices relative to input: reads are 0.1x or less (0.05x on Claude
+/// Opus 5.5), writes with the 5-minute TTL 1.25x. The read factor is the conservative 0.1.
+const CACHE_READ_PRICE: f64 = 0.1;
+const CACHE_WRITE_PRICE: f64 = 1.25;
 
 /// One model answer: the text, and the usage when the backend reports it.
 #[derive(Debug, Clone)]
@@ -287,10 +299,18 @@ impl MeteredProvider {
                 usage,
             };
             let cost_usd = match (completion.usage, self.prices) {
-                (Some(usage), (input, output)) if input.is_some() || output.is_some() => Some(
-                    usage.input_tokens as f64 / 1e6 * input.unwrap_or_default()
-                        + usage.output_tokens as f64 / 1e6 * output.unwrap_or_default(),
-                ),
+                (Some(usage), (input, output)) if input.is_some() || output.is_some() => {
+                    let uncached = usage
+                        .input_tokens
+                        .saturating_sub(usage.cache_read_tokens + usage.cache_write_tokens);
+                    let input_units = uncached as f64
+                        + usage.cache_read_tokens as f64 * CACHE_READ_PRICE
+                        + usage.cache_write_tokens as f64 * CACHE_WRITE_PRICE;
+                    Some(
+                        input_units / 1e6 * input.unwrap_or_default()
+                            + usage.output_tokens as f64 / 1e6 * output.unwrap_or_default(),
+                    )
+                }
                 _ => None,
             };
             self.ledger.push(UsageRecord {
@@ -555,7 +575,16 @@ impl HttpChatProvider {
                 let mut body = json!({
                     "model": self.model,
                     "max_tokens": self.max_tokens.unwrap_or(CLAUDE_DEFAULT_MAX_TOKENS),
-                    "system": system_prompt,
+                    // Prompt caching: the system prompt (and the tools rendered before it) is the
+                    // stable prefix of every call of an employee; the top-level marker caches the
+                    // growing conversation of a tool loop. Below the model's minimum nothing is
+                    // cached and nothing is charged extra.
+                    "system": [{
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": { "type": "ephemeral" },
+                    }],
+                    "cache_control": { "type": "ephemeral" },
                     "messages": wire,
                 });
                 if !tools.is_empty() {
@@ -594,9 +623,20 @@ impl HttpChatProvider {
             (_, None) => {}
         }
 
+        // A timed-out generation is not retried: the server keeps working on it, and the same
+        // long request would time out again (a real run spent 3 x 180 s this way; on a paid API
+        // every attempt is billed). Connection failures are retried.
         let response = request.send().await.map_err(|err| AttemptError {
-            retryable: err.is_timeout() || err.is_connect(),
-            error: anyhow::Error::new(err).context("LLM HTTP request failed"),
+            retryable: err.is_connect() && !err.is_timeout(),
+            error: if err.is_timeout() {
+                anyhow::Error::new(err).context(
+                    "LLM HTTP request failed: no answer within timeout_secs; not retried (it \
+                     would repeat the same generation). Raise timeout_secs, or check that the \
+                     model fits the GPU (ollama ps)",
+                )
+            } else {
+                anyhow::Error::new(err).context("LLM HTTP request failed")
+            },
         })?;
 
         let status = response.status();
@@ -610,7 +650,7 @@ impl HttpChatProvider {
         }
 
         let parsed: Value = response.json().await.map_err(|err| AttemptError {
-            retryable: err.is_timeout(),
+            retryable: false,
             error: anyhow::Error::new(err).context("cannot parse LLM response JSON"),
         })?;
 
@@ -739,9 +779,23 @@ impl HttpChatProvider {
                 &parsed["usage"]["output_tokens"],
             ),
         };
+        // Claude reports cached prompt tokens apart from `input_tokens`.
+        let (read, write) = match self.dialect {
+            Dialect::Claude => (
+                parsed["usage"]["cache_read_input_tokens"]
+                    .as_u64()
+                    .unwrap_or(0),
+                parsed["usage"]["cache_creation_input_tokens"]
+                    .as_u64()
+                    .unwrap_or(0),
+            ),
+            _ => (0, 0),
+        };
         Some(Usage {
-            input_tokens: input.as_u64()?,
+            input_tokens: input.as_u64()? + read + write,
             output_tokens: output.as_u64()?,
+            cache_read_tokens: read,
+            cache_write_tokens: write,
         })
     }
 }

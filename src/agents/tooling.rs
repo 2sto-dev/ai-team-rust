@@ -6,9 +6,30 @@ use serde_json::json;
 
 use super::AgentContext;
 use crate::{
-    llm::{ChatMessage, LlmProvider},
+    llm::{ChatMessage, LlmProvider, Usage},
     mcp::Toolbox,
 };
+
+/// One model call in the audit: who, which model, how many tokens, how many tool schemas
+/// rode along. This is what cost analysis per role is built on.
+fn record_call(
+    ctx: &AgentContext,
+    llm: &dyn LlmProvider,
+    usage: Option<Usage>,
+    tools: usize,
+    round: usize,
+) -> Result<()> {
+    ctx.record(
+        "LLM_CALL",
+        &json!({
+            "model": llm.model_name(),
+            "input_tokens": usage.map(|usage| usage.input_tokens),
+            "output_tokens": usage.map(|usage| usage.output_tokens),
+            "tools": tools,
+            "round": round,
+        }),
+    )
+}
 
 /// Tool rounds allowed for one answer.
 pub const MAX_TOOL_ROUNDS: usize = 8;
@@ -22,17 +43,25 @@ pub async fn answer(
     toolbox: Option<&Toolbox>,
     ctx: &AgentContext,
 ) -> Result<String> {
-    let Some(toolbox) = toolbox else {
-        return llm.complete(system_prompt, prompt).await;
+    let tools = match toolbox {
+        Some(toolbox) => {
+            toolbox
+                .specs_for(&format!("{system_prompt}\n{prompt}"))
+                .await?
+        }
+        None => Vec::new(),
     };
-    let tools = toolbox.specs().await?;
-    if tools.is_empty() {
-        return llm.complete(system_prompt, prompt).await;
-    }
+    let tools = tools.as_slice();
+    let (Some(toolbox), false) = (toolbox, tools.is_empty()) else {
+        let completion = llm.generate(system_prompt, prompt).await?;
+        record_call(ctx, llm, completion.usage, 0, 0)?;
+        return Ok(completion.text);
+    };
 
     let mut messages = vec![ChatMessage::User(prompt.to_string())];
-    for _ in 0..MAX_TOOL_ROUNDS {
+    for round in 0..MAX_TOOL_ROUNDS {
         let turn = llm.chat(system_prompt, &messages, tools).await?;
+        record_call(ctx, llm, turn.usage, tools.len(), round)?;
         if turn.tool_calls.is_empty() {
             return Ok(turn.text);
         }
@@ -73,6 +102,7 @@ pub async fn answer(
             .to_string(),
     ));
     let turn = llm.chat(system_prompt, &messages, tools).await?;
+    record_call(ctx, llm, turn.usage, tools.len(), MAX_TOOL_ROUNDS)?;
     ctx.record(
         "TOOL_BUDGET_EXHAUSTED",
         &json!({ "ignored_calls": turn.tool_calls.len() }),

@@ -149,7 +149,35 @@ Builder cannot meet the acceptance criteria by following it. Otherwise use "buil
             ));
         }
 
-        let advisory = self.consult(ctx, &prompt).await?;
+        // Advisors judge the code for their specialty: they need the task and the code, not
+        // the project context and specification the Reviewer weighs (about half the tokens).
+        let mut advisor_prompt = format!(
+            "TASK:
+{task}
+
+IMPLEMENTATION (iteration {iteration}):
+{implementation}
+",
+            task = order.task,
+            iteration = order.iteration,
+            implementation = implementation.content,
+        );
+        if let Some(verification) = &order.verification {
+            advisor_prompt.push_str(&format!(
+                "
+AUTOMATED VERIFICATION (by the platform):
+{}
+",
+                verification.report()
+            ));
+        }
+        advisor_prompt.push_str(
+            "
+Review the implementation for your specialty only. Return ONLY valid JSON:
+             {\"decision\":\"APPROVED\"|\"CHANGES_REQUIRED\",\"target\":\"builder\",\"feedback\":\"specific actionable feedback\"}
+",
+        );
+        let advisory = self.consult(ctx, &advisor_prompt).await?;
         if !advisory.is_empty() {
             prompt.push_str(
                 "\nADVISORY REVIEWS (from your specialists; a VETO rejection cannot be overruled):\n",

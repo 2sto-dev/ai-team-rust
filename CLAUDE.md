@@ -87,21 +87,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `openai`: `/chat/completions`, bearer auth.
   - `ollama`: native `/api/chat` with `options.num_ctx` / `num_predict`. Ollama's `/v1` endpoint ignores `num_ctx`, so don't switch Ollama to the openai dialect.
   - `claude`: `/v1/messages`, with `x-api-key` and `anthropic-version: 2023-06-01`. It never sends `temperature` (current models 400 on sampling params). `max_tokens` defaults to 16000, plus optional `output_config.effort`. `stop_reason` `refusal` or `max_tokens` is a fatal error.
-  - All dialects retry only timeouts, connection errors, 429 and 5xx, and strip a leading `<think>` block.
+    - Prompt caching: `system` is one text block with `cache_control` (it caches the tools too, since they render first). A top-level `cache_control` caches the growing tool-loop conversation.
+    - `Usage.input_tokens` counts the whole prompt (uncached + `cache_creation_input_tokens` + `cache_read_input_tokens`), and `cache_read_tokens` / `cache_write_tokens` keep the cached parts.
+    - Metering prices reads at 0.1x and writes at 1.25x of `cost_per_mtok_input`.
+    - Keep system prompts free of per-call data (dates, ids), or the cache never hits.
+  - All dialects retry only connection errors, 429 and 5xx, and strip a leading `<think>` block. A timed-out request is not retried: the server keeps generating, and a retry repeated the same 180 s generation three times in a real run (on a paid API, every attempt is billed).
   - A truncated answer is a fatal, non-retried error in every dialect: Ollama `done_reason: length`, OpenAI `finish_reason: length`, Claude `stop_reason: max_tokens`. A real run showed a 4B Reviewer approving a cut-off implementation, so don't relax this.
   - `ModelConfig::validate` rejects options the chosen provider would ignore.
   - Agents get their backends from a `ProviderFactory`. `Orchestrator::from_registry` uses `http_providers()`; tests call `from_registry_with_providers(registry, test_providers())`.
-  - The shipped `company/` points at Ollama on `http://10.10.0.14:11434`: Planner, Architect and Builder use `qwen3-coder:30b`, the Reviewer and Security use `qwen2.5:14b`. Every `qwen3-coder` employee has `num_ctx` 65536; the Reviewer and Security have 32768, which is `qwen2.5:14b`'s maximum. `run` needs that server. Tests never touch the network.
+  - The shipped `company/` points at Ollama on `http://10.10.0.14:11434`: Planner, Architect and Builder use `qwen3-coder:30b`, the Reviewer and Security use `qwen2.5:14b`. Every `qwen3-coder` employee has `num_ctx` 49152; the Reviewer and Security have 32768, which is `qwen2.5:14b`'s maximum. `run` needs that server. Tests never touch the network.
   - An iteration is counted only after the Builder delivers (`orchestrator.rs`), so a failed or truncated Builder call does not use up a task's budget.
   - The Builder and Architect job descriptions carry a "Size and focus" section (about 2,500 / 2,000 words, no boilerplate). Without it, `qwen3-coder` wrote full Java classes and revisions overflowed even 8192 tokens.
   - `num_predict` is 8192 for Architect/Builder, 4096 for Planner and 1200 for Reviewer. 4096 was too small: on a real project task, the Builder's second iteration (full rewrite plus fixes) was cut off.
   - `num_ctx` on that server, measured 2026-10-07 (24 GB GPU):
-    - 49152 fits fully in VRAM at about 151 tok/s.
-    - 65536 is 98% in VRAM at about 94 tok/s on short prompts. A 34k-token prompt is read at about 1,900 tok/s and generates at about 70 tok/s.
-    - (An earlier server setup dropped to 7 tok/s at 65536.)
+    - 49152 fits fully in VRAM at about 150 tok/s. That is the shipped value.
+    - 65536 sits on the edge: 98% in VRAM gave about 94 tok/s, but 96% later the same day gave 8 tok/s. That made Architect calls time out, so don't go back to 65536 on a 24 GB GPU.
+    - Check the fit with `ollama ps` (`size_vram` equal to `size`).
     - Keep one `num_ctx` value for every employee on the same model, because Ollama reloads the model whenever it changes.
   - Context overflow is fatal, like output truncation, because Ollama silently drops the beginning of a too-long prompt, system prompt included. `check_prompt_fits` refuses a prompt that needs more than `num_ctx - num_predict` tokens (counted at 4 chars per token, so it underestimates), and a reply whose `prompt_eval_count` filled that room is an error.
-  - Platform input budgets are sized for 64k: workspace snapshot 80k chars (`workbench.rs`), question snapshot 60k plus attachments 100k (`manager.rs`), dependency context 16k, and input preview 12k (`owner.rs`; every agent sees it, the 32k Reviewer too).
+  - Platform input budgets are sized for 48k:
+    - workspace snapshot 60k chars (`workbench.rs`);
+    - question snapshot 40k plus attachments 80k (`manager.rs`);
+    - dependency context 16k;
+    - input preview 12k (`owner.rs`; every agent sees it, the 32k Reviewer too).
+  - **Token economy** (measured with `LLM_CALL` audit events, recorded per model call by `tooling::answer` with model, input/output tokens, tool count and round). Input costs about 8x output, so prompts are trimmed per role. On the same task these cuts took input from 54k to 33k tokens:
+    - **Snapshots per role.** `workspace::filter_snapshot` keeps the file listing but only the contents of the given files. Snapshot blocks are `#### FILE: <path> (<n> bytes)`, so file contents can never fake a block.
+      - Specialists get only their own files.
+      - The lead's split call and the Architect's consultants get the listing only.
+      - The Architect and a solo Builder see everything.
+    - **No duplicate code.** When a workspace is shown, the Builder's PREVIOUS IMPLEMENTATION is a pointer to it instead of a second copy.
+    - **Advisors** (Security) get the task, the code and the verification, not the project context and spec.
+    - **Tools only where useful.** The lead's split call gets no tool schemas. `offer_when` in `mcp.yaml` offers a server's tools only when the prompt contains one of its words, and otherwise the server is not even started. `rustdocs`' 15 schemas are about 6,200 tokens per call.
+    - **The Planner's team call is kept on purpose** (about 2.5% of tokens): it is where hiring suggestions come from.
   - Thinking models (`qwen3:4b`, `qwen3.6`) currently return invalid JSON, because thinking consumes `num_predict`.
 - `ModelConfig` (`src/config.rs`) is the `model:` block of a contract. Projects are `projects/*.json`.
 

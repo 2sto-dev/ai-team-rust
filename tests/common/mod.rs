@@ -299,6 +299,7 @@ call {call}
         let usage = Usage {
             input_tokens: (user_prompt.len() / 4) as u64,
             output_tokens: (answer.len() / 4) as u64,
+            ..Usage::default()
         };
         Box::pin(async move {
             Ok(Completion {

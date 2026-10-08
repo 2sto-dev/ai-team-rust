@@ -709,7 +709,11 @@ impl Workspace {
             match String::from_utf8(bytes) {
                 Ok(text) if text.len() <= budget => {
                     budget -= text.len();
-                    contents.push_str(&format!("\n#### {relative}\n```\n{text}\n```\n"));
+                    // The byte length lets a reader skip the contents exactly, whatever they hold.
+                    contents.push_str(&format!(
+                        "\n{FILE_MARK}{relative} ({} bytes)\n```\n{text}\n```\n",
+                        text.len()
+                    ));
                 }
                 _ => omitted += 1,
             }
@@ -723,9 +727,113 @@ impl Workspace {
     }
 }
 
+/// Starts one file's contents in a snapshot.
+const FILE_MARK: &str = "#### FILE: ";
+
+/// A snapshot (or a briefing containing one) with the contents of only the `keep` files:
+/// the file listing and every text outside the contents stay. Each agent then pays only for
+/// the files it works on; a specialist sees the whole project only by name.
+pub fn filter_snapshot(text: &str, keep: &[String]) -> String {
+    let opener = format!("\n{FILE_MARK}");
+    let Some(first) = text.find(&opener) else {
+        return text.to_string();
+    };
+    let mut out = String::with_capacity(text.len().min(64 * 1024));
+    out.push_str(&text[..first]);
+    let mut position = first;
+    let mut dropped = 0;
+    // Each block: "\n#### FILE: <path> (<n> bytes)\n```\n" + n bytes + "\n```\n".
+    while text[position..].starts_with(&opener) {
+        let header_start = position + opener.len();
+        let Some(header_len) = text[header_start..].find('\n') else {
+            break;
+        };
+        let header = &text[header_start..header_start + header_len];
+        let Some((path, size)) = header
+            .strip_suffix(" bytes)")
+            .and_then(|rest| rest.rsplit_once(" ("))
+            .and_then(|(path, size)| Some((path, size.parse::<usize>().ok()?)))
+        else {
+            break;
+        };
+        let body_start = header_start + header_len + 1 + "```\n".len();
+        let block_end = body_start + size + "\n```\n".len();
+        if block_end > text.len() || !text.is_char_boundary(block_end) {
+            break;
+        }
+        if keep.iter().any(|kept| kept == path) {
+            out.push_str(&text[position..block_end]);
+        } else {
+            dropped += 1;
+        }
+        position = block_end;
+    }
+    if dropped > 0 {
+        out.push_str(&format!(
+            "\n({dropped} file(s) listed above are not shown here: they are not yours to change)\n"
+        ));
+    }
+    out.push_str(&text[position..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_can_keep_only_some_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        fs::write(
+            dir.path().join("a.py"),
+            "A = 1
+#### FILE: fake heading in content
+",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("b.md"),
+            "# B
+#### Title
+",
+        )
+        .unwrap();
+        let briefing = format!(
+            "WORKSPACE:
+{}
+HOW YOUR ANSWER IS APPLIED: rules",
+            workspace.snapshot(10_000).unwrap()
+        );
+
+        let only_b = filter_snapshot(&briefing, &["b.md".to_string()]);
+        assert!(
+            only_b.contains("- a.py (") && only_b.contains("- b.md ("),
+            "{only_b}"
+        );
+        assert!(
+            only_b.contains("#### Title") && !only_b.contains("A = 1"),
+            "{only_b}"
+        );
+        assert!(
+            only_b.contains("1 file(s) listed above are not shown"),
+            "{only_b}"
+        );
+        assert!(
+            only_b.ends_with("HOW YOUR ANSWER IS APPLIED: rules"),
+            "{only_b}"
+        );
+
+        let names = filter_snapshot(&briefing, &[]);
+        assert!(
+            !names.contains("# B") && names.contains("- b.md ("),
+            "{names}"
+        );
+        assert_eq!(
+            filter_snapshot("(empty workspace)", &[]),
+            "(empty workspace)"
+        );
+    }
 
     fn block(path: &str, content: &str) -> FileBlock {
         FileBlock {

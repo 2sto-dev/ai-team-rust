@@ -24,10 +24,10 @@ const MAX_TASK_PLAN_ATTEMPTS: u32 = 3;
 const DEPENDENCY_CONTEXT_CHARS: usize = 16_000;
 
 /// How much of the project's files a question sees.
-const QUESTION_SNAPSHOT_CHARS: usize = 60_000;
+const QUESTION_SNAPSHOT_CHARS: usize = 40_000;
 /// How much of the documents attached to a question the model sees (all of them together).
-/// With the project snapshot this stays under ~45k tokens of a 64k context.
-const ATTACHMENT_CHARS: usize = 100_000;
+/// With the project snapshot this stays near 30k tokens of a 48k context.
+const ATTACHMENT_CHARS: usize = 80_000;
 
 const CONSULTANT_PROMPT: &str = "\
 You are the team's technical lead. The Owner asks a question about their project. Answer only \

@@ -209,7 +209,9 @@ async fn ollama_dialect_sends_native_options() {
 async fn claude_dialect_uses_messages_api() {
     let reply = serde_json::json!({
         "stop_reason": "end_turn",
-        "content": [{"type": "text", "text": "{\"decision\":\"APPROVED\",\"feedback\":\"ok\"}"}]
+        "content": [{"type": "text", "text": "{\"decision\":\"APPROVED\",\"feedback\":\"ok\"}"}],
+        "usage": {"input_tokens": 50, "output_tokens": 9,
+                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 900}
     });
     let (origin, _hits, requests) =
         serve_capturing(vec![Reply::Status(200, reply.to_string())]).await;
@@ -223,8 +225,11 @@ async fn claude_dialect_uses_messages_api() {
     config.effort = Some("high".to_string());
     let provider = provider_for(&config).unwrap();
 
-    let answer = provider.complete("be strict", "review this").await.unwrap();
-    assert!(answer.contains("APPROVED"));
+    let completion = provider.generate("be strict", "review this").await.unwrap();
+    assert!(completion.text.contains("APPROVED"));
+    // Cached prompt tokens count as input; their share is kept for pricing.
+    let usage = completion.usage.unwrap();
+    assert_eq!((usage.input_tokens, usage.cache_read_tokens), (950, 900));
 
     let raw = requests.lock().unwrap()[0].clone();
     let lower = raw.to_lowercase();
@@ -237,7 +242,9 @@ async fn claude_dialect_uses_messages_api() {
     );
 
     let body = request_json(&raw);
-    assert_eq!(body["system"], "be strict");
+    assert_eq!(body["system"][0]["text"], "be strict");
+    assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(body["cache_control"]["type"], "ephemeral");
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["max_tokens"], 16000);
     assert_eq!(body["output_config"]["effort"], "high");

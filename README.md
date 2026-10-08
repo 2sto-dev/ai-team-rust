@@ -276,13 +276,13 @@ Configurația curentă a echipei (server Ollama `http://10.10.0.14:11434`):
 
 | Angajat | Model | `num_ctx` | `num_predict` |
 |---|---|---|---|
-| Planner | `qwen3-coder:30b` | 65536 | 4096 (un plan de proiect în JSON) |
-| Architect, Builder, specialiști, consultanți | `qwen3-coder:30b` | 65536 | 8192 (consultanții 2048) |
+| Planner | `qwen3-coder:30b` | 49152 | 4096 (un plan de proiect în JSON) |
+| Architect, Builder, specialiști, consultanți | `qwen3-coder:30b` | 49152 | 8192 (consultanții 2048) |
 | Reviewer, Security | `qwen2.5:14b` (altă familie decât Builder-ul → verificare independentă) | 32768 (maximul modelului) | 1200 |
 
-Toți: `temperature: 0.1`, `timeout_secs: 180`. Context de 65536 tokeni (măsurat pe 10.10.0.14, GPU de
-24 GB): 98% din model în GPU, ~94 tokeni/s la prompturi scurte; un prompt de ~34.000 de tokeni e citit
-în ~18 s, iar răspunsul vine cu ~70 tokeni/s (la 49152 totul încape în GPU, ~151 tokeni/s). Toți
+Toți: `temperature: 0.1`, `timeout_secs: 180`. Context de 49152 tokeni (măsurat pe 10.10.0.14, GPU de
+24 GB): modelul încape 100% în GPU, ~150 tokeni/s. La 65536 stă pe muchie: 98% în GPU a dat ~94
+tokeni/s, dar 96% în aceeași zi a dat 8 tokeni/s și apelurile au depășit timpul. Toți
 angajații pe același model folosesc aceeași valoare — altfel Ollama reîncarcă modelul. Un prompt
 prea lung pentru context e eroare clară (Ollama i-ar tăia în tăcere începutul, cu tot cu
 instrucțiuni). Modelele cu „thinking” (`qwen3:4b`, `qwen3.6`) nu sunt folosite: gândirea consumă
@@ -296,7 +296,7 @@ model:
   model: qwen3-coder:30b
   base_url: http://10.10.0.14:11434   # fără /v1
   temperature: 0.1
-  num_ctx: 65536
+  num_ctx: 49152
   num_predict: 8192
   timeout_secs: 180
 ```
@@ -575,6 +575,24 @@ ce se întâmplă, inclusiv dintr-o consolă deschisă în paralel):
 - **Activitatea recentă** din audit (doar evenimentele, fără prompturi sau cod).
 
 Ascultă doar pe `127.0.0.1` (datele includ prompturi, cod și costuri).
+
+## Consum și costuri
+
+Fiecare apel de model apare în audit ca `LLM_CALL` (angajat, model, tokeni intrați/ieșiți), deci se
+vede exact cine consumă. Măsurat: tokenii intrați costă de ~8 ori mai mult decât cei ieșiți, așa că
+platforma trimite fiecărui agent doar ce îi trebuie:
+
+- specialistul primește conținutul fișierelor lui și doar lista celorlalte; consultanții și
+  împărțirea muncii doar lista; Security doar task-ul și codul;
+- uneltele MCP se trimit doar unde au sens (`offer_when` în `company/mcp.yaml`; `rustdocs` doar la
+  proiecte Rust) și niciodată la împărțirea muncii;
+- codul iterației precedente nu se mai trimite de două ori;
+- un apel care depășește timpul nu se mai reia (ar repeta aceeași generare, plătită de 3 ori);
+- pe Claude: *prompt caching* pe instrucțiuni și unelte (citirile din cache costă ~10%).
+
+Pe același task: 54.000 → 33.000 de tokeni intrați (−39%), 82 → 69 s; pe proiecte mari economia e
+mai mare. Pe serverul Ollama de 24 GB, `num_ctx` 49152 încape tot în GPU (~150 tokeni/s); 65536 e la
+limită și poate cădea la 8 tokeni/s — verifică cu `ollama ps`.
 
 ## Reutilizare la alt proiect
 

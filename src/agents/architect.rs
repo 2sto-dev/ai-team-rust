@@ -8,6 +8,7 @@ use crate::{
     domain::{AgentOutput, Artifact, ArtifactKind, Role, WorkOrder},
     llm::LlmProvider,
     mcp::Toolbox,
+    workspace::filter_snapshot,
 };
 
 use super::{
@@ -108,7 +109,9 @@ impl Architect {
         let advice = if self.consultants.is_empty() {
             String::new()
         } else {
-            let notes = self.consult(ctx, &context, &order.task, &existing).await?;
+            // Design notes need the project's shape, not every file's contents.
+            let listing = filter_snapshot(&existing, &[]);
+            let notes = self.consult(ctx, &context, &order.task, &listing).await?;
             if notes.is_empty() {
                 String::new()
             } else {

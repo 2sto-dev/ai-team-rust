@@ -5,6 +5,7 @@
 #   env              literal, non-secret variables
 #   env_from         variables copied from the platform's environment (how secrets reach a server)
 #   timeout_secs     per request (default 30)
+#   offer_when       offer the tools only when the prompt contains one of these words (default: always)
 servers:
   pydoc:
     description: Python standard-library documentation (local, read-only)
@@ -21,3 +22,5 @@ servers:
       RUST_DOCS_MCP_TOOLCHAIN: nightly-2026-05-22
     # Caching a crate downloads and documents it (rustdoc JSON); the first call can take minutes.
     timeout_secs: 300
+    # Its 15 tool schemas cost ~6,200 tokens per call: offer them only for Rust work.
+    offer_when: [rust, cargo, cargo.toml, crate, crates, rustc]

@@ -21,7 +21,7 @@ use crate::{
     domain::{AgentOutput, Artifact, ArtifactKind, Role, WorkOrder},
     llm::LlmProvider,
     mcp::Toolbox,
-    workspace::{extract_files, validate_path},
+    workspace::{extract_files, filter_snapshot, validate_path},
 };
 
 /// Heading of the delegation request in the lead's prompt.
@@ -105,7 +105,7 @@ pub struct BuilderLead {
     name: String,
     system_prompt: String,
     llm: Arc<dyn LlmProvider>,
-    toolbox: Option<Arc<Toolbox>>,
+    /// Works alone (with the lead's MCP tools) when no split is accepted.
     solo: Builder,
     team: Vec<Specialist>,
 }
@@ -120,13 +120,12 @@ impl BuilderLead {
     ) -> Self {
         let name = name.into();
         let system_prompt = system_prompt.into();
-        let solo = Builder::new(name.clone(), system_prompt.clone(), llm.clone())
-            .with_toolbox(toolbox.clone());
+        let solo =
+            Builder::new(name.clone(), system_prompt.clone(), llm.clone()).with_toolbox(toolbox);
         Self {
             name,
             system_prompt,
             llm,
-            toolbox,
             solo,
             team,
         }
@@ -140,7 +139,9 @@ impl BuilderLead {
             .join("\n")
     }
 
-    fn shared_context(&self, order: &WorkOrder) -> Result<String> {
+    /// The context every subagent shares; `files` limits the workspace contents shown
+    /// (everyone still sees the whole file listing).
+    fn shared_context(&self, order: &WorkOrder, files: &[String]) -> Result<String> {
         let spec = order
             .specification
             .as_ref()
@@ -167,7 +168,7 @@ impl BuilderLead {
             );
         }
         if let Some(workspace) = &order.workspace {
-            let _ = write!(text, "\n{workspace}\n");
+            let _ = write!(text, "\n{}\n", filter_snapshot(workspace, files));
         }
         Ok(text)
     }
@@ -186,7 +187,8 @@ impl BuilderLead {
              - Return {{\"subtasks\": []}} to do the work yourself.\n\n\
              Return ONLY valid JSON:\n\
              {{\"subtasks\":[{{\"assignee\":\"EMP-...\",\"title\":\"...\",\"instructions\":\"...\",\"files\":[\"path\"]}}],\"rationale\":\"...\"}}\n",
-            context = self.shared_context(order)?,
+            // Splitting needs file names, not contents.
+            context = self.shared_context(order, &[])?,
             roster = self.roster(),
         );
 
@@ -198,14 +200,8 @@ impl BuilderLead {
                 ),
                 None => base.clone(),
             };
-            let raw = answer(
-                self.llm.as_ref(),
-                &self.system_prompt,
-                &prompt,
-                self.toolbox.as_deref(),
-                ctx,
-            )
-            .await?;
+            // The split is a JSON plan: tool schemas would only cost tokens here.
+            let raw = answer(self.llm.as_ref(), &self.system_prompt, &prompt, None, ctx).await?;
             let reason = match parse_json_reply::<DelegationPlan>(&raw) {
                 Some(plan) if plan.subtasks.is_empty() => return Ok(None),
                 Some(plan) => match validate_delegation(&plan.subtasks, &team) {
@@ -229,7 +225,6 @@ impl BuilderLead {
         order: &WorkOrder,
         subtasks: &[Subtask],
     ) -> Result<String> {
-        let shared = self.shared_context(order)?;
         let mut content = format!(
             "Implementation by {} with {} subtask(s).\n",
             self.name,
@@ -248,7 +243,9 @@ impl BuilderLead {
                 &json!({ "title": subtask.title, "files": subtask.files }),
             )?;
 
-            // Only this subtask's context: no other subtasks, no full previous implementation.
+            // Only this subtask's context: no other subtasks, no full previous implementation,
+            // and the contents of its own files only (the rest of the project by name).
+            let shared = self.shared_context(order, &subtask.files)?;
             let prompt = format!(
                 "{shared}\nYOUR SUBTASK (from {lead}): {title}\n{instructions}\n\n\
                  FILES YOU OWN (write or delete only these; anything else is discarded by the platform):\n{files}\n",

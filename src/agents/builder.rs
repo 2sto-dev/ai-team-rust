@@ -77,12 +77,13 @@ REVIEWER FEEDBACK ON THE PREVIOUS IMPLEMENTATION:
             spec_revision = spec.revision,
             spec = spec.content,
             iteration = order.iteration,
-            previous = order
-                .implementation
-                .as_ref()
-                .map_or("none (first iteration)", |artifact| artifact
-                    .content
-                    .as_str()),
+            // Its files are already in the WORKSPACE section: sending them twice only costs.
+            previous = match (&order.implementation, &order.workspace) {
+                (None, _) => "none (first iteration)",
+                (Some(_), Some(_)) =>
+                    "written to the workspace: its files are in the WORKSPACE section below",
+                (Some(artifact), None) => artifact.content.as_str(),
+            },
             feedback = order
                 .review
                 .as_ref()

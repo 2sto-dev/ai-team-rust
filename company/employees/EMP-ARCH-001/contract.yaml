@@ -11,7 +11,7 @@ model:
   model: qwen3-coder:30b
   base_url: http://10.10.0.14:11434
   temperature: 0.1
-  num_ctx: 65536
+  num_ctx: 49152
   num_predict: 8192
   timeout_secs: 180
 skills:
